@@ -1,0 +1,119 @@
+-- 连接到 vehicleManageDB 数据库
+
+-- 1. VEHICLE 车辆信息表
+CREATE TABLE IF NOT EXISTS vehicle (
+    id SERIAL PRIMARY KEY,
+    license_plate VARCHAR(255),
+    type VARCHAR(255),
+    status INTEGER,
+    gps_id VARCHAR(255),
+    kilometres INTEGER,
+    insurance_expire_date DATE
+);
+
+-- 2. DRIVER 司机信息表
+CREATE TABLE IF NOT EXISTS driver (
+    id SERIAL PRIMARY KEY,
+    client_id INTEGER,
+    name VARCHAR(255),
+    phone_no INTEGER,
+    email VARCHAR(255),
+    driver_license VARCHAR(255),
+    license_type VARCHAR(255),
+    class_of_vehicle VARCHAR(255),
+    license_issue_date DATE,
+    license_expire_date DATE,
+    license_issue_state VARCHAR(255),
+    status INTEGER
+);
+
+-- 3. TASK 司机任务表
+CREATE TABLE IF NOT EXISTS task (
+    id SERIAL PRIMARY KEY,
+    order_id INTEGER,
+    driver_id INTEGER,
+    vehicle_id INTEGER,
+    container_id INTEGER,
+    task_status INTEGER,
+    task_start_time TIME,
+    task_complete_time TIME,
+    pick_up_container_time TIME,
+    delivered_container_time TIME,
+    return_container_time TIME,
+    emergency_status INTEGER,
+    fee_id INTEGER
+);
+
+-- 4. EXCEPTION 任务异常记录表
+CREATE TABLE IF NOT EXISTS exception (
+    id SERIAL PRIMARY KEY,
+    task_id INTEGER,
+    type VARCHAR(255),
+    cause VARCHAR(255)
+);
+
+-- 5. CONTAINER 集装箱信息表
+CREATE TABLE IF NOT EXISTS container (
+    id SERIAL PRIMARY KEY,
+    container_no VARCHAR(255),
+    port VARCHAR(255),
+    status INTEGER,
+    free_expired_time TIME
+);
+
+-- 6. FEE 任务费用表
+CREATE TABLE IF NOT EXISTS fee (
+    id SERIAL PRIMARY KEY,
+    task_id INTEGER,
+    fee_type INTEGER,
+    fee_note VARCHAR(255),
+    create_time TIME,
+    img_id INTEGER
+);
+
+-- 7. ORDER 订单表
+CREATE TABLE IF NOT EXISTS orders (
+    id SERIAL PRIMARY KEY,
+    type INTEGER,
+    s VARCHAR(255),
+    end_point VARCHAR(255),
+    size VARCHAR(255),
+    container_no VARCHAR(255),
+    pin VARCHAR(255),
+    customer_note VARCHAR(255),
+    vessel VARCHAR(255),
+    shipping_line VARCHAR(255),
+    ETA DATE,
+    first_available DATE,
+    last_free_date DATE,
+    client_name VARCHAR(255),
+    customer_address VARCHAR(255),
+    forwarder VARCHAR(255),
+    weight INTEGER,
+    noted VARCHAR(255),
+    invoice_id INTEGER,
+    status INTEGER,
+    process_client_id INTEGER
+);
+
+-- 8. INVOICE 订单收支表
+CREATE TABLE IF NOT EXISTS invoice (
+    id SERIAL PRIMARY KEY,
+    cost INTEGER,
+    revenue INTEGER,
+    status INTEGER
+);
+
+-- 9. STAFF 员工信息表
+CREATE TABLE IF NOT EXISTS staff (
+    id SERIAL PRIMARY KEY,
+    role INTEGER,
+    name VARCHAR(255),
+    gender INTEGER,
+    age INTEGER,
+    birthday DATE,
+    position VARCHAR(255),
+    email_address VARCHAR(255),
+    phone_no INTEGER,
+    password VARCHAR(255)
+);
