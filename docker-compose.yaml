@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres
     container_name: vehicle_management_pgDB
     environment:
       POSTGRES_USER: admin
@@ -20,7 +20,7 @@ services:
     user: "999:999"
 
   rabbitmq:
-    image: rabbitmq:4-management-alpine
+    image: rabbitmq
     container_name: rabbitmq
     hostname: rabbitmq-host
     ports:
@@ -32,5 +32,5 @@ services:
       RABBITMQ_DEFAULT_VHOST: /
     volumes:
       - /home/docker_directory/rabbitmq/data:/var/lib/rabbitmq
-      - /home/docker_directory/rabbitmq/logs:/var/log/rabbitmq
+        # - /home/docker_directory/rabbitmq/logs:/var/log/rabbitmq
     restart: unless-stopped

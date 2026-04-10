@@ -2,13 +2,15 @@
 #define USER_MANAGEMENT_H
 
 #include "../common/include/crow_all.h"
+#include "../common/include/database.h"
 #include <memory>
 #include <string>
 #include <unordered_map>
 
-using UserControllerMapFunc = crow::response(*)(const crow::request& req);
+// 函数类型：接收 request 和 connection 引用
+using UserControllerMapFunc = crow::response(*)(const crow::request&, pqxx::connection&);
 
-class UserControllerFactory{
+class UserControllerFactory {
 public:
     static UserControllerFactory& instance() {
         static UserControllerFactory factory;
@@ -26,6 +28,7 @@ public:
         }
         return nullptr;
     }
+    
 private:
     UserControllerFactory() = default;
     UserControllerFactory(const UserControllerFactory&) = delete;
@@ -38,6 +41,5 @@ private:
         UserControllerFactory::instance().registerController(name, func); \
         return nullptr; \
     }();
-
 
 #endif
