@@ -34,3 +34,15 @@ services:
       - /home/docker_directory/rabbitmq/data:/var/lib/rabbitmq
         # - /home/docker_directory/rabbitmq/logs:/var/log/rabbitmq
     restart: unless-stopped
+
+  nginx:
+    image: nginx:latest
+    container_name: nginx-gateway
+    ports:
+      - "80:80"
+      - "443:443"      # 如果需要 HTTPS，可以映射 443 端口
+    volumes:
+      - /home/docker_directory/nginx/conf/default.conf:/etc/nginx/conf.d/default.conf:ro  # 配置文件
+      - /home/docker_directory/nginx/logs:/var/log/nginx      # 日志文件
+    restart: always
+      
