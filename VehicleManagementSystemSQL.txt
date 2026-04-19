@@ -109,11 +109,12 @@ CREATE TABLE IF NOT EXISTS staff (
     id SERIAL PRIMARY KEY,
     role INTEGER,
     name VARCHAR(255),
+    username VARCHAR(255),
     gender INTEGER,
     age INTEGER,
     birthday DATE,
     position VARCHAR(255),
     email_address VARCHAR(255),
-    phone_no INTEGER,
+    phone_no VARCHAR(255),
     password VARCHAR(255)
 );
