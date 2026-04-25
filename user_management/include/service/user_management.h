@@ -1,40 +1,9 @@
 #ifndef USER_MANAGEMENT_H
 #define USER_MANAGEMENT_H
 
-#include "../common/include/crow_all.h"
-#include "../common/include/database.h"
-#include <memory>
-#include <string>
-#include <unordered_map>
+#include "../common/include/controller_management_base.h"
 
-// 函数类型：接收 request 和 connection 引用
-using UserControllerMapFunc = crow::response(*)(const crow::request&, pqxx::connection&);
-
-class UserControllerFactory {
-public:
-    static UserControllerFactory& instance() {
-        static UserControllerFactory factory;
-        return factory;
-    }
-
-    void registerController(const std::string& name, UserControllerMapFunc userApi) {
-        userControllerMap[name] = userApi;
-    }
-
-    UserControllerMapFunc create(const std::string& name) {
-        auto it = userControllerMap.find(name);
-        if (it != userControllerMap.end()) {
-            return it->second;
-        }
-        return nullptr;
-    }
-    
-private:
-    UserControllerFactory() = default;
-    UserControllerFactory(const UserControllerFactory&) = delete;
-    UserControllerFactory& operator=(const UserControllerFactory&) = delete;
-    std::unordered_map<std::string, UserControllerMapFunc> userControllerMap;    
-};
+class UserControllerFactory : public BaseControllerFactory<UserControllerFactory> {};
 
 #define AUTO_REGISTER_USER_API(name, func) \
     static auto __reg_##func = [](){ \
