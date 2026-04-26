@@ -269,9 +269,168 @@ crow::response getUserListFunc(const crow::request& req, pqxx::connection& conn)
     }
 }
 
+crow::response addUserFunc(const crow::request& req, pqxx::connection& conn) {
+    crow::json::wvalue result;
+    
+    std::string token = req.get_header_value("token");
+    if (token.empty()) {
+        result["retCode"] = 401;
+        result["errorMsg"] = "Missing token";
+        return crow::response(401, result);
+    }
+
+    auto body = crow::json::load(req.body);
+    if (!body) {
+        result["retCode"] = 400;
+        result["errorMsg"] = "Request body error";
+        return crow::response(400, result);
+    }
+
+    try {
+        pqxx::work txn(conn);
+        
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{"user_management"})
+            .with_issuer("user_management");
+        verifier.verify(decoded);
+
+        // 建议：增加字段存在性检查，避免访问不存在的键导致潜在异常
+        if (!body.has("userName") || !body.has("nickName") || !body.has("password") || 
+            !body.has("phonenumber") || !body.has("email") || !body.has("role")) {
+             result["retCode"] = 400;
+             result["errorMsg"] = "Missing required fields";
+             return crow::response(400, result);
+        }
+
+        std::string username = body["userName"].s();
+        std::string name = body["nickName"].s();
+        std::string position = body["position"].s();
+        std::string email_address = body["email"].s();
+        std::string phone_no = body["phonenumber"].s();
+        std::string password = body["password"].s();
+
+        int role = 0;
+        if (body["role"].t() == crow::json::type::Number) {
+            role = body["role"].i();
+        } else if (body["role"].t() == crow::json::type::String) {
+            role = std::stoi(body["role"].s());
+        }
+
+        // ✅ 关键：确保所有 NOT NULL 字段都被赋值或使用默认值
+        // 假设 age, birthday, gender 允许 NULL 或有默认值，否则需在此处补充
+        pqxx::result res = txn.exec_params(
+            "INSERT INTO staff (role, username, name, position, email_address, phone_no, password) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+            role, username, name, position, email_address, phone_no, password);
+
+        if (res.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "Failed to add user";
+            return crow::response(400, result);
+        } else {
+            result["retCode"] = 200;
+            result["msg"] = "Success";
+        }        
+    
+        txn.commit(); 
+        return crow::response(200, result);
+        
+    } catch (const std::exception& e) {
+        // ✅ 打印具体错误，方便调试
+        std::cerr << "Add User Error: " << e.what() << std::endl;
+        
+        result["retCode"] = 400;
+        // 生产环境不建议直接返回 e.what()，可能泄露敏感信息
+        result["errorMsg"] = "Database error or Constraint violation"; 
+        return crow::response(400, result);
+    }
+}
+
+crow::response deleteUserFunc(const crow::request& req, pqxx::connection& conn) {
+    crow::json::wvalue result;
+    
+    std::string token = req.get_header_value("token");
+    if (token.empty()) {
+        result["retCode"] = 401;
+        result["errorMsg"] = "Missing token";
+        return crow::response(401, result);
+    }
+
+    auto body = crow::json::load(req.body);
+    if (!body) {
+        result["retCode"] = 400;
+        result["errorMsg"] = "Request body error";
+        return crow::response(400, result);
+    }
+
+    try {
+        // JWT 验证
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{"user_management"})
+            .with_issuer("user_management");
+        verifier.verify(decoded);
+
+        // 检查是否有 ids 字段
+        if (!body.has("ids")) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "Missing required field: ids";
+            return crow::response(400, result);
+        }
+
+        // 获取 ID 列表
+        std::vector<int> ids;
+        auto& ids_array = body["ids"];
+        
+        // 提取所有 ID
+        for (const auto& id_val : ids_array) {
+            ids.push_back(id_val.i());
+        }
+
+        if (ids.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "ids array cannot be empty";
+            return crow::response(400, result);
+        }
+
+        pqxx::work txn(conn);
+
+        int deletedCount = 0;
+        for (int id : ids) {
+            pqxx::result res = txn.exec_params("DELETE FROM staff WHERE id = $1 RETURNING id", id);
+            if (!res.empty()) {
+                deletedCount++;
+            }
+        }
+
+        txn.commit();
+        
+        if (deletedCount > 0) {
+            result["retCode"] = 200;
+        } else {
+            result["retCode"] = 400;
+            result["errorMsg"] = "No users were deleted. IDs may not exist.";
+            return crow::response(400, result);
+        }
+        
+        return crow::response(200, result);
+        
+    } catch (const std::exception& e) {
+        // ✅ 打印具体错误，方便调试
+        std::cerr << "Delete User Error: " << e.what() << std::endl;
+        
+        result["retCode"] = 400;
+        result["errorMsg"] = "Database error or Constraint violation"; 
+        return crow::response(400, result);
+    }
+}
+
 // 注册接口到工厂
 AUTO_REGISTER_USER_API("login", userLoginFunc);
 AUTO_REGISTER_USER_API("forgetPassword", forgetPasswordFunc);
 AUTO_REGISTER_USER_API("resetPassword", resetPasswordFunc);
 AUTO_REGISTER_USER_API("queryUserInfo", queryUserInfoFunc);
 AUTO_REGISTER_USER_API("getUserList", getUserListFunc);
+AUTO_REGISTER_USER_API("addUser", addUserFunc);
+AUTO_REGISTER_USER_API("deleteUser", deleteUserFunc);

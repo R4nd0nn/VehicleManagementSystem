@@ -105,7 +105,36 @@ int main() {
             return getUserListFunc(req, *connGuard);
         });
     }
+
+    auto addUserFunc = UserControllerFactory::instance().create("addUser");
+    if (addUserFunc) {                        
+        CROW_ROUTE(app, "/user_mng/addUser").methods("POST"_method)
+        ([addUserFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue result;
+                result["retCode"] = 400;
+                result["errorMsg"] = "Database connection failed";
+                return crow::response(400, result);
+            }
+            return addUserFunc(req, *connGuard);
+        });
+    }
     
+    auto deleteUserFunc = UserControllerFactory::instance().create("deleteUser");
+    if (deleteUserFunc) {                        
+        CROW_ROUTE(app, "/user_mng/deleteUser").methods("POST"_method)
+        ([deleteUserFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue result;
+                result["retCode"] = 400;
+                result["errorMsg"] = "Database connection failed";
+                return crow::response(400, result);
+            }
+            return deleteUserFunc(req, *connGuard);
+        });
+    }
     std::cout << "User Management Service running on port " << USER_MANAGE_PORT << std::endl;
     app.port(USER_MANAGE_PORT).multithreaded().run();
     
