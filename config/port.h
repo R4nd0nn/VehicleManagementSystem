@@ -2,6 +2,7 @@
 #define PORT_H
 
 #define USER_MANAGE_PORT 8081
-#define ORDER_MANAGE_PORT 8082
+#define ORDER_MANAGE_PORT 8083
+#define DISPATCH_MANAGE_PORT 8084
 
 #endif

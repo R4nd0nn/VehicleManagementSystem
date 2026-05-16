@@ -92,7 +92,7 @@ CREATE TABLE IF NOT EXISTS orders (
     weight INTEGER,
     noted VARCHAR(255),
     invoice_id INTEGER,
-    status INTEGER,
+    status INTEGER, -- 1 未分配,2 进行中，3 已完成, 4 已取消
     process_client_id INTEGER
 );
 

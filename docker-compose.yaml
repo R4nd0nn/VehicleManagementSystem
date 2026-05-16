@@ -49,6 +49,8 @@ services:
       - ./dist:/usr/share/nginx/html:ro  # 前端静态文件挂载到这里
     depends_on:
       - user-management
+      - dispatch-management
+      - order-management
       - java-app  
     restart: always
   
@@ -91,3 +93,55 @@ services:
     depends_on:
     - postgres
     restart: unless-stopped
+
+  order-management:
+    image: quay.io/centos/centos:stream9
+    container_name: order-management-service
+    working_dir: /app
+    command: sh -c "dnf install -y postgresql-libs && ./order_management"
+    ports:
+    - "8083:8083"
+    volumes:
+    - /home/VehicleManagementSystem/order_management/output/order_management:/app/order_management
+    environment:
+    - DB_HOST=postgres
+    - DB_PORT=5432
+    - DB_USER=admin
+    - DB_PASSWORD=admin123
+    - DB_NAME=vehicleManageDB
+    depends_on:
+    - postgres
+    restart: unless-stopped
+
+  dispatch-management:
+    image: quay.io/centos/centos:stream9
+    container_name: dispatch-management-service
+    working_dir: /app
+    command: sh -c "dnf install -y postgresql-libs && ./dispatch_management"
+    ports:
+    - "8084:8084"
+    volumes:
+    - /home/VehicleManagementSystem/dispatch_management/output/dispatch_management:/app/dispatch_management
+    environment:
+    - DB_HOST=postgres
+    - DB_PORT=5432
+    - DB_USER=admin
+    - DB_PASSWORD=admin123
+    - DB_NAME=vehicleManageDB
+    depends_on:
+    - postgres
+    restart: unless-stopped
+
+  auth-service:
+    image: python:3.9-slim
+    container_name: auth_service
+    ports:
+      - "9999:9999"
+    volumes:
+      - /home/BookTool/auth_server.py:/app/auth_server.py
+      - /home/BookTool/whitelist.json:/app/whitelist.json
+    working_dir: /app
+    command: >
+      sh -c "pip3 install flask && python3 auth_server.py"
+    restart: unless-stopped
+
