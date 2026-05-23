@@ -1,6 +1,7 @@
 -- 连接到 vehicleManageDB 数据库
 
 -- 1. VEHICLE 车辆信息表
+DROP TABLE IF EXISTS vehicle;
 CREATE TABLE IF NOT EXISTS vehicle (
     id SERIAL PRIMARY KEY,
     license_plate VARCHAR(255),
@@ -12,6 +13,7 @@ CREATE TABLE IF NOT EXISTS vehicle (
 );
 
 -- 2. DRIVER 司机信息表
+DROP TABLE IF EXISTS driver;
 CREATE TABLE IF NOT EXISTS driver (
     id SERIAL PRIMARY KEY,
     client_id INTEGER,
@@ -28,6 +30,7 @@ CREATE TABLE IF NOT EXISTS driver (
 );
 
 -- 3. TASK 司机任务表
+DROP TABLE IF EXISTS task;
 CREATE TABLE IF NOT EXISTS task (
     id SERIAL PRIMARY KEY,
     order_id INTEGER,
@@ -35,16 +38,17 @@ CREATE TABLE IF NOT EXISTS task (
     vehicle_id INTEGER,
     container_id INTEGER,
     task_status INTEGER,
-    task_start_time TIME,
-    task_complete_time TIME,
-    pick_up_container_time TIME,
-    delivered_container_time TIME,
-    return_container_time TIME,
+    task_start_time TIMESTAMP,
+    task_complete_time TIMESTAMP,
+    pick_up_container_time TIMESTAMP,
+    delivered_container_time TIMESTAMP,
+    return_container_time TIMESTAMP,
     emergency_status INTEGER,
     fee_id INTEGER
 );
 
 -- 4. EXCEPTION 任务异常记录表
+DROP TABLE IF EXISTS exception;
 CREATE TABLE IF NOT EXISTS exception (
     id SERIAL PRIMARY KEY,
     task_id INTEGER,
@@ -53,25 +57,36 @@ CREATE TABLE IF NOT EXISTS exception (
 );
 
 -- 5. CONTAINER 集装箱信息表
+DROP TABLE IF EXISTS container;
 CREATE TABLE IF NOT EXISTS container (
     id SERIAL PRIMARY KEY,
-    container_no VARCHAR(255),
-    port VARCHAR(255),
-    status INTEGER,
-    free_expired_time TIME
+    container_no VARCHAR(50) NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    pickup_time TIMESTAMP,
+    return_time TIMESTAMP,
+    free_days INT DEFAULT 7,
+    abnormal_status VARCHAR(50),
+    abnormal_desc VARCHAR(500),
+    waybill_no VARCHAR(50),
+    port VARCHAR(100),
+    free_expired_time INTEGER,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
 );
 
 -- 6. FEE 任务费用表
+DROP TABLE IF EXISTS fee;
 CREATE TABLE IF NOT EXISTS fee (
     id SERIAL PRIMARY KEY,
     task_id INTEGER,
     fee_type INTEGER,
     fee_note VARCHAR(255),
-    create_time TIME,
+    create_time TIMESTAMP,
     img_id INTEGER
 );
 
 -- 7. ORDER 订单表
+DROP TABLE IF EXISTS orders;
 CREATE TABLE IF NOT EXISTS orders (
     id SERIAL PRIMARY KEY,
     type INTEGER,
@@ -97,6 +112,7 @@ CREATE TABLE IF NOT EXISTS orders (
 );
 
 -- 8. INVOICE 订单收支表
+DROP TABLE IF EXISTS invoice;
 CREATE TABLE IF NOT EXISTS invoice (
     id SERIAL PRIMARY KEY,
     cost INTEGER,
@@ -105,6 +121,7 @@ CREATE TABLE IF NOT EXISTS invoice (
 );
 
 -- 9. STAFF 员工信息表
+DROP TABLE IF EXISTS staff;
 CREATE TABLE IF NOT EXISTS staff (
     id SERIAL PRIMARY KEY,
     role INTEGER,

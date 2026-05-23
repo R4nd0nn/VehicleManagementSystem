@@ -51,6 +51,7 @@ services:
       - user-management
       - dispatch-management
       - order-management
+      - container-management
       - java-app  
     restart: always
   
@@ -122,6 +123,25 @@ services:
     - "8084:8084"
     volumes:
     - /home/VehicleManagementSystem/dispatch_management/output/dispatch_management:/app/dispatch_management
+    environment:
+    - DB_HOST=postgres
+    - DB_PORT=5432
+    - DB_USER=admin
+    - DB_PASSWORD=admin123
+    - DB_NAME=vehicleManageDB
+    depends_on:
+    - postgres
+    restart: unless-stopped
+
+  container-management:
+    image: quay.io/centos/centos:stream9
+    container_name: container-management-service
+    working_dir: /app
+    command: sh -c "dnf install -y postgresql-libs && ./container_management"
+    ports:
+    - "8085:8085"
+    volumes:
+    - /home/VehicleManagementSystem/container_management/output/container_management:/app/container_management
     environment:
     - DB_HOST=postgres
     - DB_PORT=5432
