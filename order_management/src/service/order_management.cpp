@@ -1,5 +1,585 @@
 #include "service/order_management.h"
+
+#include <OpenXLSX/OpenXLSX.hpp>
+#include <algorithm>
+#include <cctype>
+#include <regex>
+#include <fstream>
+#include <sstream>
+#include <openssl/bio.h>
+#include <openssl/evp.h>
+#include <openssl/buffer.h>
+#include <chrono>
+#include <map>
+#include <iconv.h>
+#include <cstring>
+#include <cerrno>
+#include <iostream>
+#include <ctime>
+#include <optional>
+
 #include "../common/include/jwt/jwt.h"
+
+std::string base64_decode(const std::string& encoded) {
+    BIO* bio = BIO_new_mem_buf(encoded.c_str(), encoded.length());
+    BIO* b64 = BIO_new(BIO_f_base64());
+    bio = BIO_push(b64, bio);
+    BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL);
+    
+    char* buffer = new char[encoded.length()];
+    int decoded_len = BIO_read(bio, buffer, encoded.length());
+    
+    std::string result(buffer, decoded_len);
+    delete[] buffer;
+    BIO_free_all(bio);
+    
+    return result;
+}
+
+// 安全截断
+static std::string safeTruncate(const std::string& str, size_t maxLen)
+{
+    if (str.size() <= maxLen) return str;
+    std::string result = str.substr(0, maxLen);
+    while (!result.empty() && (result.back() & 0x80) && (result.back() & 0xC0) != 0xC0) result.pop_back();
+    return result;
+}
+
+// 日期转换 YYYY-MM-DD
+static std::string convertDate(const std::string& dateStr)
+{
+    if (dateStr.empty()) return "";
+    int year=0, month=0, day=0;
+    if (sscanf(dateStr.c_str(), "%d/%d/%d", &year,&month,&day)==3 && year>1900) { char buf[11]; sprintf(buf,"%04d-%02d-%02d",year,month,day); return buf; }
+    if (sscanf(dateStr.c_str(), "%d/%d/%d", &day,&month,&year)==3 && year>1900) { char buf[11]; sprintf(buf,"%04d-%02d-%02d",year,month,day); return buf; }
+    return "";
+}
+
+// 导入 Excel
+crow::response importExcelFunc(const crow::request& req, pqxx::connection& conn) {
+    crow::json::wvalue result;
+    
+    auto startTotal = std::chrono::steady_clock::now();
+    auto logTime = [&startTotal](const std::string& step) {
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - startTotal).count();
+        std::cout << "[LOG] " << step << " - 耗时: " << elapsed << "ms" << std::endl;
+    };
+
+    std::cout << "[LOG] ========== importExcelFunc 开始 ==========" << std::endl;
+
+    std::string token = req.get_header_value("token");
+    if (token.empty()) {
+        result["retCode"] = 401;
+        result["errorMsg"] = "Missing token";
+        return crow::response(401, result);
+    }
+    logTime("Token 验证通过");
+
+    try {
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{"user_management"})
+            .with_issuer("user_management");
+        verifier.verify(decoded);
+        std::string username = decoded.get_subject();
+        logTime("JWT 验证完成，用户名: " + username);
+
+        pqxx::work txn(conn);
+        pqxx::result staffRes = txn.exec_params(
+            "SELECT id FROM staff WHERE username = $1", username);
+        if (staffRes.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "User not found";
+            return crow::response(400, result);
+        }
+        int userId = staffRes[0]["id"].as<int>();
+        logTime("获取用户ID: " + std::to_string(userId));
+
+        auto body = crow::json::load(req.body);
+        if (!body || !body.has("fileData")) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "Invalid request, missing fileData";
+            return crow::response(400, result);
+        }
+        logTime("JSON 解析完成");
+
+        std::string base64Data = body["fileData"].s();
+        logTime("Base64 数据长度: " + std::to_string(base64Data.length()));
+        
+        std::string fileContent = base64_decode(base64Data);
+        logTime("解码后文件大小: " + std::to_string(fileContent.size()) + " bytes");
+
+        std::string tempFile = "/tmp/excel_import_" + std::to_string(time(nullptr)) + ".xlsx";
+        std::ofstream out(tempFile, std::ios::binary);
+        out.write(fileContent.c_str(), fileContent.size());
+        out.close();
+        logTime("临时文件保存成功: " + tempFile);
+
+        std::cout << "[LOG] 开始打开 Excel 文件..." << std::endl;
+        OpenXLSX::XLDocument doc;
+        doc.open(tempFile);
+        logTime("Excel 文件打开成功");
+
+        auto wb = doc.workbook();
+        auto sheetNames = wb.worksheetNames();
+        logTime("工作表数量: " + std::to_string(sheetNames.size()));
+        
+        for (const auto& name : sheetNames) {
+            std::cout << "[LOG] 发现工作表: " << name << std::endl;
+        }
+
+        auto isContinuation = [](unsigned char c) -> bool {
+            return (c & 0xC0) == 0x80;
+        };
+
+        auto cleanUTF8 = [&isContinuation](const std::string& str) -> std::string {
+            if (str.empty()) return "";
+            std::string result;
+            result.reserve(str.size());
+            for (size_t i = 0; i < str.size(); i++) {
+                unsigned char c = str[i];
+                if (c <= 0x7F) {
+                    if (c == 0x09 || c == 0x0A || c == 0x0D || c >= 0x20) {
+                        result += c;
+                    } else {
+                        result += ' ';
+                    }
+                }
+                else if (c >= 0xC2 && c <= 0xDF && i + 1 < str.size() && isContinuation((unsigned char)str[i + 1])) {
+                    result += c;
+                    result += str[++i];
+                }
+                else if (c >= 0xE0 && c <= 0xEF && i + 2 < str.size()
+                         && isContinuation((unsigned char)str[i + 1])
+                         && isContinuation((unsigned char)str[i + 2])) {
+                    unsigned char b1 = str[i + 1];
+                    if (c == 0xED && b1 >= 0xA0 && b1 <= 0xBF) {
+                        i += 2;
+                        result += ' ';
+                        continue;
+                    }
+                    result += c;
+                    result += str[++i];
+                    result += str[++i];
+                }
+                else if (c >= 0xF0 && c <= 0xF4 && i + 3 < str.size()
+                         && isContinuation((unsigned char)str[i + 1])
+                         && isContinuation((unsigned char)str[i + 2])
+                         && isContinuation((unsigned char)str[i + 3])) {
+                    unsigned char b1 = str[i + 1];
+                    if (c == 0xF4 && b1 >= 0x90) {
+                        i += 3;
+                        result += ' ';
+                        continue;
+                    }
+                    result += c;
+                    result += str[++i];
+                    result += str[++i];
+                    result += str[++i];
+                }
+                else {
+                    result += ' ';
+                }
+            }
+            return result;
+        };
+
+        auto safeTruncate = [](const std::string& str, size_t maxLen) -> std::string {
+            if (str.length() <= maxLen) return str;
+            std::string result = str.substr(0, maxLen);
+            while (!result.empty() && (result.back() & 0x80)) {
+                if ((result.back() & 0xC0) == 0x80) {
+                    result.pop_back();
+                } else {
+                    result.pop_back();
+                    break;
+                }
+            }
+            return result;
+        };
+
+        auto wordBoundaryMatch = [](const std::string& text, const std::string& pattern) -> bool {
+            size_t pos = text.find(pattern);
+            while (pos != std::string::npos) {
+                bool leftOk = (pos == 0) || (text[pos - 1] == ' ');
+                bool rightOk = (pos + pattern.size() == text.size()) || (text[pos + pattern.size()] == ' ');
+                if (leftOk && rightOk) return true;
+                pos = text.find(pattern, pos + 1);
+            }
+            return false;
+        };
+
+        std::map<std::string, std::vector<std::string>> fieldMapping = {
+            {"type",            {"type", "import/export"}},
+            {"start_point",     {"from"}},
+            {"end_point",       {"to"}},
+            {"size",            {"size"}},
+            {"container_no",    {"container no", "container"}},
+            {"pin",             {"pin"}},
+            {"customer_note",   {"客人要求", "customerrequest"}},
+            {"vessel",          {"vessel"}},
+            {"shipping_line",   {"shipping line"}},
+            {"eta",             {"eta"}},
+            {"first_available", {"first available", "first avaiable"}},
+            {"last_free_date",  {"last free date"}},
+            {"client_name",     {"client name"}},
+            {"customer_address",{"customer address"}},
+            {"forwarder",       {"forwarder", "customer name"}},
+            {"weight",          {"weight"}},
+            {"invoice_id",      {"invoice"}},
+            {"noted",           {"noted"}},
+            {"gate_in",         {"gate in"}},
+            {"gate_out",        {"gate out"}},
+            {"tt",              {"tt"}}
+        };
+
+        auto convertType = [](const std::string& typeStr) -> int {
+            if (typeStr.empty()) return 1;
+            std::string upper = typeStr;
+            std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+            if (upper.find("EXPORT") != std::string::npos) return 2;
+            return 1;
+        };
+
+        auto isLeapYear = [](int y) -> bool {
+            return (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
+        };
+
+        auto isValidDate = [&isLeapYear](int year, int month, int day) -> bool {
+            if (year < 1901 || year > 2099 || month < 1 || month > 12 || day < 1) return false;
+            static const int daysInMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+            int maxDay = daysInMonth[month - 1];
+            if (month == 2 && isLeapYear(year)) maxDay = 29;
+            return day <= maxDay;
+        };
+
+        auto excelSerialToDate = [&isValidDate, &isLeapYear](int serial) -> std::string {
+            if (serial < 1 || serial > 100000) return "";
+            int offset = (serial > 60) ? (serial - 2) : (serial - 1);
+            int y = 1900, m = 1, d = 1;
+            while (true) {
+                int daysInYear = isLeapYear(y) ? 366 : 365;
+                if (offset < daysInYear) break;
+                offset -= daysInYear;
+                y++;
+            }
+            static const int monthDays[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+            for (m = 1; m <= 12; m++) {
+                int md = monthDays[m - 1];
+                if (m == 2 && isLeapYear(y)) md = 29;
+                if (offset < md) break;
+                offset -= md;
+            }
+            d = offset + 1;
+            if (!isValidDate(y, m, d)) return "";
+            char buf[11];
+            sprintf(buf, "%04d-%02d-%02d", y, m, d);
+            return std::string(buf);
+        };
+
+        auto convertDate = [&isValidDate, &excelSerialToDate](const std::string& dateStr) -> std::string {
+            if (dateStr.empty()) return "";
+            int year = 0, month = 0, day = 0;
+
+            char* endp = nullptr;
+            long serialNum = strtol(dateStr.c_str(), &endp, 10);
+            if (*endp == '\0' && serialNum > 0 && serialNum < 100000) {
+                return excelSerialToDate((int)serialNum);
+            }
+
+            if (sscanf(dateStr.c_str(), "%d/%d/%d", &year, &month, &day) >= 3 && year > 1900) {
+                if (isValidDate(year, month, day)) {
+                    char buf[11];
+                    sprintf(buf, "%04d-%02d-%02d", year, month, day);
+                    return std::string(buf);
+                }
+            }
+            if (sscanf(dateStr.c_str(), "%d/%d/%d", &day, &month, &year) == 3 && year > 1900) {
+                if (isValidDate(year, month, day)) {
+                    char buf[11];
+                    sprintf(buf, "%04d-%02d-%02d", year, month, day);
+                    return std::string(buf);
+                }
+            }
+            if (sscanf(dateStr.c_str(), "%d-%d-%d", &year, &month, &day) == 3 && year > 1900) {
+                if (isValidDate(year, month, day)) {
+                    char buf[11];
+                    sprintf(buf, "%04d-%02d-%02d", year, month, day);
+                    return std::string(buf);
+                }
+            }
+            if (sscanf(dateStr.c_str(), "%d-%d-%d", &day, &month, &year) == 3 && year > 1900) {
+                if (isValidDate(year, month, day)) {
+                    char buf[11];
+                    sprintf(buf, "%04d-%02d-%02d", year, month, day);
+                    return std::string(buf);
+                }
+            }
+            return "";
+        };
+
+        // ======== 第一阶段：解析表头 ========
+        std::vector<std::map<std::string, int>> sheetMaps;
+        std::cout << "[LOG] 开始解析表头..." << std::endl;
+
+        for (const auto& sheetName : sheetNames) {
+            auto ws = wb.worksheet(sheetName);
+            std::map<std::string, int> colMap;
+            
+            for (int col = 1; col <= 50; col++) {
+                try {
+                    std::string header = ws.cell(1, col).value().getString();
+                    if (header.empty()) continue;
+                    
+                    header = cleanUTF8(header);
+                    std::string lower = header;
+                    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+                    
+                    for (const auto& [field, keywords] : fieldMapping) {
+                        for (const auto& kw : keywords) {
+                            std::string lowerKw = kw;
+                            std::transform(lowerKw.begin(), lowerKw.end(), lowerKw.begin(), ::tolower);
+                            if (wordBoundaryMatch(lower, lowerKw)) {
+                                colMap[field] = col;
+                                break;
+                            }
+                        }
+                    }
+                } catch (...) {
+                    break;
+                }
+            }
+            sheetMaps.push_back(colMap);
+
+            std::cout << "[DIAG] 工作表 " << sheetName << " colMap (" << colMap.size() << " 项):" << std::endl;
+            for (const auto& [field, col] : colMap) {
+                std::cout << "[DIAG]   " << field << " → Col " << col << std::endl;
+            }
+        }
+        logTime("表头解析完成");
+
+        // ======== 第二阶段：逐行插入 ========
+        int successCount = 0;
+        int failCount = 0;
+        int diagSampleCount = 0;
+
+        auto insertStart = std::chrono::steady_clock::now();
+
+        for (size_t sheetIdx = 0; sheetIdx < sheetNames.size(); sheetIdx++) {
+            auto ws = wb.worksheet(sheetNames[sheetIdx]);
+            auto colMap = sheetMaps[sheetIdx];
+            auto lastRow = ws.rowCount();
+            
+            std::cout << "[LOG] 处理工作表: " << sheetNames[sheetIdx] << ", 报告总行数: " << lastRow << std::endl;
+            
+            int sheetSuccess = 0;
+            int sheetFail = 0;
+            int consecutiveEmpty = 0;
+            int maxEmptyRows = 100;
+            
+            auto sheetStart = std::chrono::steady_clock::now();
+            
+            for (int rowNum = 2; rowNum <= lastRow && consecutiveEmpty < maxEmptyRows; rowNum++) {
+                bool rowFailed = false;
+                
+                std::string type_raw, eta_raw, first_available_raw, last_free_date_raw;
+                std::string weight_raw, gate_in_raw, gate_out_raw, tt_raw;
+                
+                std::string spName = "sp_" + std::to_string(sheetIdx) + "_" + std::to_string(rowNum);
+                txn.exec("SAVEPOINT " + spName);
+                
+                try {
+                    auto getVal = [&](const std::string& field) -> std::string {
+                        auto it = colMap.find(field);
+                        if (it != colMap.end()) {
+                            return cleanUTF8(ws.cell(rowNum, it->second).value().getString());
+                        }
+                        return "";
+                    };
+                    
+                    auto getValRaw = [&](const std::string& field, std::string& rawOut) -> std::string {
+                        auto it = colMap.find(field);
+                        if (it != colMap.end()) {
+                            rawOut = ws.cell(rowNum, it->second).value().getString();
+                            return cleanUTF8(rawOut);
+                        }
+                        rawOut = "";
+                        return "";
+                    };
+                    
+                    int typeVal = convertType(getValRaw("type", type_raw));
+                    std::string start_point = getVal("start_point");
+                    std::string end_point = getVal("end_point");
+                    std::string container_no = getVal("container_no");
+                    
+                    if (start_point.empty() && end_point.empty() && container_no.empty()) {
+                        consecutiveEmpty++;
+                        txn.exec("RELEASE SAVEPOINT " + spName);
+                        continue;
+                    }
+                    consecutiveEmpty = 0;
+                    
+                    std::string size = getVal("size");
+                    std::string pin = getVal("pin");
+                    std::string customer_note = getVal("customer_note");
+                    std::string vessel = getVal("vessel");
+                    std::string shipping_line = getVal("shipping_line");
+                    
+                    std::string eta = convertDate(getValRaw("eta", eta_raw));
+                    std::string first_available = convertDate(getValRaw("first_available", first_available_raw));
+                    std::string last_free_date = convertDate(getValRaw("last_free_date", last_free_date_raw));
+                    
+                    std::string client_name = getVal("client_name");
+                    std::string customer_address = getVal("customer_address");
+                    std::string forwarder = getVal("forwarder");
+                    std::string invoice_id = getVal("invoice_id");
+                    std::string noted = getVal("noted");
+                    
+                    std::string weight = getValRaw("weight", weight_raw);
+                    std::string gate_in = getValRaw("gate_in", gate_in_raw);
+                    std::string gate_out = getValRaw("gate_out", gate_out_raw);
+                    std::string tt = getValRaw("tt", tt_raw);
+
+                    if (diagSampleCount < 3) {
+                        std::cout << "[DIAG] " << sheetNames[sheetIdx] << " Row " << rowNum
+                                  << " type_raw=[" << type_raw << "] → " << typeVal
+                                  << " | start=[" << start_point << "]"
+                                  << " | end=[" << end_point << "]"
+                                  << " | container=[" << container_no << "]"
+                                  << " | eta_raw=[" << eta_raw << "] → [" << eta << "]"
+                                  << " | fa_raw=[" << first_available_raw << "] → [" << first_available << "]"
+                                  << " | lfd_raw=[" << last_free_date_raw << "] → [" << last_free_date << "]"
+                                  << " | fwd=[" << forwarder << "]"
+                                  << " | client=[" << client_name << "]"
+                                  << std::endl;
+                        diagSampleCount++;
+                    }
+                    
+                    start_point = safeTruncate(start_point, 255);
+                    end_point = safeTruncate(end_point, 255);
+                    client_name = safeTruncate(client_name, 255);
+                    customer_address = safeTruncate(customer_address, 255);
+                    forwarder = safeTruncate(forwarder, 255);
+                    container_no = safeTruncate(container_no, 255);
+                    pin = safeTruncate(pin, 255);
+                    invoice_id = safeTruncate(invoice_id, 50);
+                    weight = safeTruncate(weight, 50);
+                    gate_in = safeTruncate(gate_in, 50);
+                    gate_out = safeTruncate(gate_out, 50);
+                    tt = safeTruncate(tt, 50);
+                    
+                    txn.exec_params(
+                        "INSERT INTO orders ("
+                        "type, start_point, end_point, size, container_no, pin, customer_note, "
+                        "vessel, shipping_line, eta, first_available, last_free_date, "
+                        "client_name, customer_address, forwarder, weight, noted, invoice_id, "
+                        "status, process_client_id, create_user_id, gate_in, gate_out, tt"
+                        ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, "
+                        "$15, $16, $17, $18, $19, $20, $21, $22, $23, $24)",
+                        typeVal,
+                        start_point.empty() ? nullptr : start_point.c_str(),
+                        end_point.empty() ? nullptr : end_point.c_str(),
+                        size.empty() ? nullptr : size.c_str(),
+                        container_no.empty() ? nullptr : container_no.c_str(),
+                        pin.empty() ? nullptr : pin.c_str(),
+                        customer_note.empty() ? nullptr : customer_note.c_str(),
+                        vessel.empty() ? nullptr : vessel.c_str(),
+                        shipping_line.empty() ? nullptr : shipping_line.c_str(),
+                        eta.empty() ? nullptr : eta.c_str(),
+                        first_available.empty() ? nullptr : first_available.c_str(),
+                        last_free_date.empty() ? nullptr : last_free_date.c_str(),
+                        client_name.empty() ? nullptr : client_name.c_str(),
+                        customer_address.empty() ? nullptr : customer_address.c_str(),
+                        forwarder.empty() ? nullptr : forwarder.c_str(),
+                        weight.empty() ? nullptr : weight.c_str(),
+                        noted.empty() ? nullptr : noted.c_str(),
+                        invoice_id.empty() ? nullptr : invoice_id.c_str(),
+                        1,
+                        userId,
+                        userId,
+                        gate_in.empty() ? nullptr : gate_in.c_str(),
+                        gate_out.empty() ? nullptr : gate_out.c_str(),
+                        tt.empty() ? nullptr : tt.c_str()
+                    );
+                    successCount++;
+                    sheetSuccess++;
+                    
+                    txn.exec("RELEASE SAVEPOINT " + spName);
+                    
+                    if (successCount % 500 == 0) {
+                        auto now = std::chrono::steady_clock::now();
+                        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - insertStart).count();
+                        std::cout << "[LOG] 已插入 " << successCount << " 行数据, 耗时: " << elapsed << "ms" << std::endl;
+                    }
+                    
+                } catch (const pqxx::sql_error& e) {
+                    rowFailed = true;
+                    failCount++;
+                    sheetFail++;
+                    try { txn.exec("ROLLBACK TO SAVEPOINT " + spName); } catch (...) {}
+                    if (sheetFail <= 5) {
+                        std::cerr << "[ERROR] Sheet " << sheetNames[sheetIdx] << " Row " << rowNum << ": " << e.what() << std::endl;
+                        std::cerr << "  >> TYPE=" << type_raw << " ETA=" << eta_raw
+                                  << " FA=" << first_available_raw << " LFD=" << last_free_date_raw
+                                  << " WT=" << weight_raw << " GI=" << gate_in_raw
+                                  << " GO=" << gate_out_raw << " TT=" << tt_raw << std::endl;
+                    }
+                } catch (const std::exception& e) {
+                    rowFailed = true;
+                    failCount++;
+                    sheetFail++;
+                    try { txn.exec("ROLLBACK TO SAVEPOINT " + spName); } catch (...) {}
+                    if (sheetFail <= 5) {
+                        std::cerr << "[ERROR] Sheet " << sheetNames[sheetIdx] << " Row " << rowNum << ": " << e.what() << std::endl;
+                        std::cerr << "  >> TYPE=" << type_raw << " ETA=" << eta_raw
+                                  << " FA=" << first_available_raw << " LFD=" << last_free_date_raw
+                                  << " WT=" << weight_raw << " GI=" << gate_in_raw
+                                  << " GO=" << gate_out_raw << " TT=" << tt_raw << std::endl;
+                    }
+                }
+                
+                if (rowFailed && sheetFail > 0 && sheetFail % 200 == 0) {
+                    std::cerr << "[ERROR] 已连续失败 " << sheetFail << " 行，终止工作表 " << sheetNames[sheetIdx] << std::endl;
+                    consecutiveEmpty = maxEmptyRows;
+                }
+            }
+            
+            auto sheetEnd = std::chrono::steady_clock::now();
+            auto sheetElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(sheetEnd - sheetStart).count();
+            std::cout << "[LOG] 工作表 " << sheetNames[sheetIdx] << " 完成, 成功: " << sheetSuccess 
+                      << ", 失败: " << sheetFail << ", 耗时: " << sheetElapsed << "ms" << std::endl;
+        }
+
+        auto insertEnd = std::chrono::steady_clock::now();
+        auto insertElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(insertEnd - insertStart).count();
+        std::cout << "[LOG] 数据插入完成, 成功: " << successCount << ", 失败: " << failCount << ", 总耗时: " << insertElapsed << "ms" << std::endl;
+
+        txn.commit();
+        logTime("事务提交完成");
+
+        doc.close();
+        logTime("Excel 文件关闭");
+
+        std::remove(tempFile.c_str());
+        logTime("临时文件删除");
+
+        auto totalEnd = std::chrono::steady_clock::now();
+        auto totalElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(totalEnd - startTotal).count();
+        std::cout << "[LOG] ========== importExcelFunc 完成, 总耗时: " << totalElapsed << "ms ==========" << std::endl;
+
+        result["retCode"] = 200;
+        result["msg"] = "导入完成，成功: " + std::to_string(successCount) + " 条，失败: " + std::to_string(failCount) + " 条";
+        return crow::response(200, result);
+
+    } catch (const std::exception& e) {
+        std::cerr << "[ERROR] importExcelFunc 异常: " << e.what() << std::endl;
+        result["retCode"] = 500;
+        result["errorMsg"] = "导入失败: " + std::string(e.what());
+        return crow::response(500, result);
+    }
+}
+
 
 crow::response addOrderFunc(const crow::request& req, pqxx::connection& conn) {
     crow::json::wvalue result;
@@ -30,6 +610,20 @@ crow::response addOrderFunc(const crow::request& req, pqxx::connection& conn) {
             .with_issuer("user_management");
         verifier.verify(decoded);
 
+        const std::string username = decoded.get_subject();
+
+        // ========== 新增：根据 username 查询 staff id ==========
+        pqxx::result staffRes = txn.exec_params(
+            "SELECT id FROM staff WHERE username = $1", username);
+        
+        if (staffRes.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "User not found";
+            return crow::response(400, result);
+        }
+        
+        int userId = staffRes[0]["id"].as<int>();
+
         // ===================== 数字类型：没有就用 0 =====================
         int type = 0;
         if (body.has("type")) {
@@ -41,6 +635,7 @@ crow::response addOrderFunc(const crow::request& req, pqxx::connection& conn) {
             weight = std::stoi(body["weight"].s());
         }
 
+        // ✅ 修复1：正确转换 invoice_id
         int invoice_id = 0;
         if (body.has("invoice")) {
             invoice_id = std::stoi(body["invoice"].s());
@@ -124,21 +719,19 @@ crow::response addOrderFunc(const crow::request& req, pqxx::connection& conn) {
         }
 
         // 默认字段
-        int status = 0;
-        int process_client_id = 0;
-
-        // 插入数据库
+        int status = 1;
+        int process_client_id = userId;
         txn.exec_params(
             "INSERT INTO orders ("
             "type, start_point, end_point, size, container_no, pin, customer_note, "
             "vessel, shipping_line, eta, first_available, last_free_date, "
             "client_name, customer_address, forwarder, weight, invoice_id, noted, "
-            "status, process_client_id"
-            ") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)",
+            "status, process_client_id, create_time, create_user_id"
+            ") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,CURRENT_TIMESTAMP,$21)",
             type, start_point, end_point, size, container_no, pin, customer_note,
             vessel, shipping_line, eta, first_available, last_free_date,
             client_name, customer_address, forwarder, weight, invoice_id, noted,
-            status, process_client_id
+            status, process_client_id, userId
         );
 
         result["retCode"] = 200;
@@ -153,6 +746,7 @@ crow::response addOrderFunc(const crow::request& req, pqxx::connection& conn) {
 
     return crow::response(200, result);
 }
+
 
 crow::response queryOrdersFunc(const crow::request& req, pqxx::connection& conn) {
     crow::json::wvalue result;
@@ -176,7 +770,7 @@ crow::response queryOrdersFunc(const crow::request& req, pqxx::connection& conn)
         verifier.verify(decoded);
 
         // ========== 动态构建查询条件 ==========
-        std::string baseQuery = "SELECT id, type, start_point, end_point, size, container_no, pin, customer_note, vessel, shipping_line, eta, first_available, last_free_date, client_name, customer_address, forwarder, weight, invoice_id, noted FROM orders WHERE 1=1";
+        std::string baseQuery = "SELECT id, type, start_point, end_point, size, container_no, pin, customer_note, vessel, shipping_line, eta, first_available, last_free_date, client_name, customer_address, forwarder, weight, invoice_id, noted, status, process_client_id, create_time, create_user_id FROM orders WHERE 1=1";
         std::vector<std::string> conditions;
         std::vector<std::string> params;
         int paramCounter = 1;
@@ -196,6 +790,7 @@ crow::response queryOrdersFunc(const crow::request& req, pqxx::connection& conn)
             "customerRequest", "vessel", "shippingLine", "eta", 
             "firstAvailable", "lastFreeDate", "clientName", 
             "customerAddress", "forwarder", "weight", "invoice", "noted",
+            "status", "process_client_id", "create_user_id",
             "eta_start", "eta_end", "first_available_start", "first_available_end",
             "last_free_date_start", "last_free_date_end",
             "pageNum", "pageSize"
@@ -236,6 +831,9 @@ crow::response queryOrdersFunc(const crow::request& req, pqxx::connection& conn)
             {"weight", "weight", false},
             {"invoice", "invoice_id", true},
             {"noted", "noted", true},
+            {"status", "status", false},
+            {"process_client_id", "process_client_id", false},
+            {"create_user_id", "create_user_id", false},
             {"eta_start", "eta", false},
             {"eta_end", "eta", false},
             {"first_available_start", "first_available", false},
@@ -352,6 +950,12 @@ crow::response queryOrdersFunc(const crow::request& req, pqxx::connection& conn)
             order["invoice"] = row["invoice_id"].is_null() ? "" : row["invoice_id"].c_str();
             order["noted"] = row["noted"].is_null() ? "" : row["noted"].c_str();
             
+            // 新增字段
+            order["status"] = row["status"].is_null() ? 0 : row["status"].as<int>();
+            order["process_client_id"] = row["process_client_id"].is_null() ? 0 : row["process_client_id"].as<int>();
+            order["create_time"] = row["create_time"].is_null() ? "" : row["create_time"].c_str();
+            order["create_user_id"] = row["create_user_id"].is_null() ? 0 : row["create_user_id"].as<int>();
+            
             order_list.push_back(std::move(order));
         }
 
@@ -375,4 +979,5 @@ crow::response queryOrdersFunc(const crow::request& req, pqxx::connection& conn)
 }
 
 AUTO_REGISTER_ORDER_API("addOrder", addOrderFunc);
+AUTO_REGISTER_ORDER_API("importExcel", importExcelFunc);
 AUTO_REGISTER_ORDER_API("queryOrders", queryOrdersFunc);

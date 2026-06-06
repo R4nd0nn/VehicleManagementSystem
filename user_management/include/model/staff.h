@@ -2,7 +2,7 @@
 #define COMMON_DEF_H
 
 #include <string>
-#include "VehicleManagementSystem/common/base.h"
+#include "../common/include/base.h"
 
 struct Staff{
     int id;

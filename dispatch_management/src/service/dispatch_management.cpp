@@ -430,7 +430,8 @@ crow::response batchDispatchFunc(const crow::request& req, pqxx::connection& con
             return crow::response(400, result);
         }
         
-        auto tasks_array =  body;
+        auto tasks_array = body;
+        int successCount = 0;
         
         for (const auto& task_data : tasks_array) {
             // 获取前端数据
@@ -444,16 +445,15 @@ crow::response batchDispatchFunc(const crow::request& req, pqxx::connection& con
                 return crow::response(400, result);
             }
             
-            // 方法1: 如果前端传的是 "ORD-3" 格式
+            // 提取订单ID数字部分
             size_t dashPos = orderId.find('-');
-            orderId = orderId.substr(dashPos + 1);
+            int orderIdInt = (dashPos != std::string::npos) ? 
+                std::stoi(orderId.substr(dashPos + 1)) : std::stoi(orderId);
 
-            // ========== 1. 从 orderId 找到 orders 表中的 id ==========
-            // 注意：orderId 是字符串如 "ORD-3"，需要根据你的实际字段名查询
-            // 假设 orders 表有一个 order_no 字段存储订单号
+            // ========== 1. 从 orderId 找到 orders 表中的 container_no ==========
             pqxx::result order_res = txn.exec_params(
                 "SELECT id, container_no FROM orders WHERE id = $1",
-                std::stoi(orderId)
+                orderIdInt
             );
             
             if (order_res.empty()) {
@@ -493,7 +493,18 @@ crow::response batchDispatchFunc(const crow::request& req, pqxx::connection& con
                 }
             }
             
-            // ========== 4. task status 初始设为1 ==========
+            // ========== 4. 检查 driver 是否存在 ==========
+            pqxx::result driver_res = txn.exec_params(
+                "SELECT id FROM driver WHERE id = $1",
+                selectedDriver
+            );
+            if (driver_res.empty()) {
+                result["retCode"] = 404;
+                result["errorMsg"] = "Driver not found: " + std::to_string(selectedDriver);
+                return crow::response(404, result);
+            }
+            
+            // ========== 5. task status 初始设为1 ==========
             int task_status = 1;
             
             auto now = std::chrono::system_clock::now();
@@ -502,25 +513,60 @@ crow::response batchDispatchFunc(const crow::request& req, pqxx::connection& con
             ss << std::put_time(std::localtime(&now_time), "%H:%M:%S");
             std::string task_start_time = ss.str();
 
-            // ========== 6. 插入 task 表 ==========
-            pqxx::result insert_res = txn.exec_params(
-                "INSERT INTO task (order_id, driver_id, vehicle_id, container_id, task_status, task_start_time, emergency_status) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
-                order_id,
-                selectedDriver,
-                vehicle_id,
-                container_id,
-                task_status,
-                task_start_time,
-                0
+            // ========== 6. 插入 task 表（修复：分开处理 NULL 值） ==========
+            pqxx::result insert_res;
+            if (container_id == -1) {
+                insert_res = txn.exec_params(
+                    "INSERT INTO task (order_id, driver_id, vehicle_id, container_id, task_status, task_start_time, emergency_status) "
+                    "VALUES ($1, $2, $3, NULL, $4, $5, $6) RETURNING id",
+                    order_id,
+                    selectedDriver,
+                    vehicle_id,
+                    task_status,
+                    task_start_time,
+                    0
+                );
+            } else {
+                insert_res = txn.exec_params(
+                    "INSERT INTO task (order_id, driver_id, vehicle_id, container_id, task_status, task_start_time, emergency_status) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+                    order_id,
+                    selectedDriver,
+                    vehicle_id,
+                    container_id,
+                    task_status,
+                    task_start_time,
+                    0
+                );
+            }
+            
+            // ========== 7. 更新 orders 表的 status 为 2（进行中） ==========
+            txn.exec_params(
+                "UPDATE orders SET status = 2 WHERE id = $1",
+                order_id
             );
-    
+            
+            // ========== 8. 更新 vehicle 表的 status 为 2（使用中），并绑定 driver_id ==========
+            txn.exec_params(
+                "UPDATE vehicle SET status = 2, driver_id = $1 WHERE id = $2",
+                selectedDriver, vehicle_id
+            );
+            
+            // ========== 9. 更新 driver 表的 status 为 2（使用中） ==========
+            txn.exec_params(
+                "UPDATE driver SET status = 2 WHERE id = $1",
+                selectedDriver
+            );
+            
+            successCount++;
         }
         
         txn.commit();
         
         // 返回成功结果
         result["retCode"] = 200;
+        result["message"] = "Batch dispatch completed";
+        result["successCount"] = successCount;
         
     } catch (const std::exception& e) {
         std::cerr << "Create Task Error: " << e.what() << std::endl;

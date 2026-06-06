@@ -20,10 +20,21 @@ file(GLOB_RECURSE SOURCES
 # 可执行文件
 add_executable(${PROJECT_NAME} ${SOURCES})
 
-# 链接库（直接使用 -l 标志）
+# 链接库（使用完整路径）
 target_link_libraries(${PROJECT_NAME}
     pqxx
     pq
     pthread
-    crypto  
+    crypto
+    ssl
+    /usr/local/lib/libOpenXLSX.a
+    /usr/local/lib/libpugixml.a
+    /usr/local/lib/libminiz.a
+    dl
+    z
+)
+
+# 添加头文件搜索路径
+target_include_directories(${PROJECT_NAME} PRIVATE
+    /usr/local/include
 )

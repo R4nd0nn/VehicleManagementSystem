@@ -6,7 +6,8 @@ CREATE TABLE IF NOT EXISTS vehicle (
     id SERIAL PRIMARY KEY,
     license_plate VARCHAR(255),
     type VARCHAR(255),
-    status INTEGER,
+    driver_id INTEGER, 
+    status INTEGER, --1 未使用, 2 使用中, 3 维护中, 4 停用, 5 车辆异常
     gps_id VARCHAR(255),
     kilometres INTEGER,
     insurance_expire_date DATE
@@ -26,7 +27,7 @@ CREATE TABLE IF NOT EXISTS driver (
     license_issue_date DATE,
     license_expire_date DATE,
     license_issue_state VARCHAR(255),
-    status INTEGER
+    status INTEGER --1 空闲, 2 工作中, 3 请假中
 );
 
 -- 3. TASK 司机任务表
@@ -89,26 +90,31 @@ CREATE TABLE IF NOT EXISTS fee (
 DROP TABLE IF EXISTS orders;
 CREATE TABLE IF NOT EXISTS orders (
     id SERIAL PRIMARY KEY,
-    type INTEGER,
-    s VARCHAR(255),
-    end_point VARCHAR(255),
-    size VARCHAR(255),
-    container_no VARCHAR(255),
-    pin VARCHAR(255),
-    customer_note VARCHAR(255),
-    vessel VARCHAR(255),
-    shipping_line VARCHAR(255),
-    ETA DATE,
-    first_available DATE,
-    last_free_date DATE,
-    client_name VARCHAR(255),
-    customer_address VARCHAR(255),
-    forwarder VARCHAR(255),
-    weight INTEGER,
-    noted VARCHAR(255),
-    invoice_id INTEGER,
-    status INTEGER, -- 1 未分配,2 进行中，3 已完成, 4 已取消
-    process_client_id INTEGER
+    type INTEGER,                           -- TYPE
+    start_point VARCHAR(255),               -- From (注意：原表是 s，应该是 start_point)
+    end_point VARCHAR(255),                 -- To/end_point
+    size VARCHAR(255),                      -- size
+    container_no VARCHAR(255),              -- Container NO
+    pin VARCHAR(255),                       -- pin
+    customer_note VARCHAR(255),             -- 客人要求
+    vessel VARCHAR(255),                    -- Vessel
+    shipping_line VARCHAR(255),             -- Shipping Line
+    eta DATE,                               -- ETA
+    first_available DATE,                   -- First avaiable
+    last_free_date DATE,                    -- Last Free Date
+    client_name VARCHAR(255),               -- Client Name
+    customer_address VARCHAR(255),          -- customer address
+    forwarder VARCHAR(255),                 -- Customer name / Forwarder
+    weight VARCHAR(50),                         -- weight (提取数字)
+    invoice_id VARCHAR(50),                 -- Invoice
+    noted VARCHAR(255),                     -- Noted / 备注 / 空列内容
+    gate_in VARCHAR(255),                    -- Gate in (2024 sheet 独有)
+    gate_out VARCHAR(255),                   -- Gate out (2024 sheet 独有)
+    tt VARCHAR(255),                         -- TT (2024 sheet 独有)
+    status INTEGER DEFAULT 1,               -- 1:未分配, 2:进行中, 3:已完成, 4:已取消, 5:订单异常
+    process_client_id INTEGER,
+    create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    create_user_id INTEGER
 );
 
 -- 8. INVOICE 订单收支表

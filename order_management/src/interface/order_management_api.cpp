@@ -45,6 +45,21 @@ int main() {
         });
     }
 
+    auto importExcelFunc = OrderControllerFactory::instance().create("importExcel");
+    if (importExcelFunc) {
+        CROW_ROUTE(app, "/order_mng/importExcel").methods("POST"_method)
+        ([importExcelFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue res;
+                res["retCode"] = 400;
+                res["errorMsg"] = "DB connect failed";
+                return crow::response(400, res);
+            }
+            return importExcelFunc(req, *connGuard);
+        });
+    }
+
     auto queryOrdersFunc = OrderControllerFactory::instance().create("queryOrders");
     if (queryOrdersFunc) {                        
         CROW_ROUTE(app, "/order_mng/queryOrders").methods("GET"_method)

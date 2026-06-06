@@ -28,6 +28,23 @@ int main() {
     // 初始化连接池
     g_db_pool = std::make_shared<ConnectionPool>(conn_str, 10);
 
+
+    // 注册菜单路由
+    auto getRouterFunc = UserControllerFactory::instance().create("getRouter");
+    if (getRouterFunc) {
+        CROW_ROUTE(app, "/user_mng/getRouters").methods("GET"_method)
+        ([getRouterFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue result;
+                result["retCode"] = 400;
+                result["errorMsg"] = "Database connection failed";
+                return crow::response(400, result);
+            }
+            return getRouterFunc(req, *connGuard);
+        });
+    }
+
     // ========== 登录接口 ==========
     auto loginFunc = UserControllerFactory::instance().create("login");
     if (loginFunc) {                        
@@ -118,6 +135,21 @@ int main() {
                 return crow::response(400, result);
             }
             return addUserFunc(req, *connGuard);
+        });
+    }
+
+    auto updateUserFunc = UserControllerFactory::instance().create("updateUser");
+    if (updateUserFunc) {                        
+        CROW_ROUTE(app, "/user_mng/updateUser").methods("POST"_method)
+        ([updateUserFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue result;
+                result["retCode"] = 400;
+                result["errorMsg"] = "Database connection failed";
+                return crow::response(400, result);
+            }
+            return updateUserFunc(req, *connGuard);
         });
     }
     
