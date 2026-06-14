@@ -45,6 +45,337 @@ int calculateDaysDiffWithNow(const std::string& startStr) {
     return calculateDaysDiff(startStr, getCurrentTimeString());
 }
 
+crow::response addContainerFunc(const crow::request& req, pqxx::connection& conn) {
+    crow::json::wvalue result;
+    
+    std::string token = req.get_header_value("token");
+    if (token.empty()) {
+        result["retCode"] = 401;
+        result["errorMsg"] = "Missing token";
+        return crow::response(401, result);
+    }
+
+    auto body = crow::json::load(req.body);
+    if (!body) {
+        result["retCode"] = 400;
+        result["errorMsg"] = "Request body error";
+        return crow::response(400, result);
+    }
+
+    try {
+        pqxx::work txn(conn);
+        
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{"user_management"})
+            .with_issuer("user_management");
+        verifier.verify(decoded);
+
+        // 必填字段校验
+        if (!body.has("container_no")) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "container_no is required";
+            return crow::response(400, result);
+        }
+
+        std::string container_no = body["container_no"].s();
+        
+        // 检查货柜号是否已存在
+        pqxx::result checkRes = txn.exec_params(
+            "SELECT id FROM container WHERE container_no = $1", container_no);
+        if (!checkRes.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "Container number already exists";
+            return crow::response(400, result);
+        }
+
+        // 修复：分开处理可选字段
+        std::string status = "available";
+        if (body.has("status")) {
+            status = body["status"].s();
+        }
+        
+        std::string pickup_time = "";
+        if (body.has("pickup_time")) {
+            pickup_time = body["pickup_time"].s();
+        }
+        
+        std::string return_time = "";
+        if (body.has("return_time")) {
+            return_time = body["return_time"].s();
+        }
+        
+        int free_days = 7;
+        if (body.has("free_days")) {
+            free_days = body["free_days"].i();
+        }
+        
+        std::string abnormal_status = "";
+        if (body.has("abnormal_status")) {
+            abnormal_status = body["abnormal_status"].s();
+        }
+        
+        std::string abnormal_desc = "";
+        if (body.has("abnormal_desc")) {
+            abnormal_desc = body["abnormal_desc"].s();
+        }
+        
+        std::string waybill_no = "";
+        if (body.has("waybill_no")) {
+            waybill_no = body["waybill_no"].s();
+        }
+        
+        std::string port = "";
+        if (body.has("port")) {
+            port = body["port"].s();
+        }
+        
+        int free_expired_time = 0;
+        if (body.has("free_expired_time")) {
+            free_expired_time = body["free_expired_time"].i();
+        }
+
+        // 插入数据库
+        pqxx::result res = txn.exec_params(
+            "INSERT INTO container ("
+            "container_no, status, pickup_time, return_time, free_days, "
+            "abnormal_status, abnormal_desc, waybill_no, port, free_expired_time, "
+            "created_at, updated_at"
+            ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING id",
+            container_no.c_str(),
+            status.empty() ? nullptr : status.c_str(),
+            pickup_time.empty() ? nullptr : pickup_time.c_str(),
+            return_time.empty() ? nullptr : return_time.c_str(),
+            free_days,
+            abnormal_status.empty() ? nullptr : abnormal_status.c_str(),
+            abnormal_desc.empty() ? nullptr : abnormal_desc.c_str(),
+            waybill_no.empty() ? nullptr : waybill_no.c_str(),
+            port.empty() ? nullptr : port.c_str(),
+            free_expired_time
+        );
+
+        if (res.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "Failed to add container";
+            return crow::response(400, result);
+        }
+
+        result["retCode"] = 200;
+        result["msg"] = "Container added successfully";
+        result["id"] = res[0]["id"].as<int>();
+        
+        txn.commit();
+        return crow::response(200, result);
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Add Container Error: " << e.what() << std::endl;
+        result["retCode"] = 500;
+        result["errorMsg"] = e.what();
+        return crow::response(500, result);
+    }
+}
+
+// ==================== 更新集装箱 ====================
+crow::response updateContainerFunc(const crow::request& req, pqxx::connection& conn) {
+    crow::json::wvalue result;
+    
+    std::string token = req.get_header_value("token");
+    if (token.empty()) {
+        result["retCode"] = 401;
+        result["errorMsg"] = "Missing token";
+        return crow::response(401, result);
+    }
+
+    auto body = crow::json::load(req.body);
+    if (!body) {
+        result["retCode"] = 400;
+        result["errorMsg"] = "Request body error";
+        return crow::response(400, result);
+    }
+
+    try {
+        pqxx::work txn(conn);
+        
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{"user_management"})
+            .with_issuer("user_management");
+        verifier.verify(decoded);
+
+        if (!body.has("id")) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "id is required";
+            return crow::response(400, result);
+        }
+
+        int containerId = body["id"].i();
+
+        // 检查是否存在
+        pqxx::result checkRes = txn.exec_params(
+            "SELECT id FROM container WHERE id = $1", containerId);
+        if (checkRes.empty()) {
+            result["retCode"] = 404;
+            result["errorMsg"] = "Container not found";
+            return crow::response(404, result);
+        }
+
+        // 构建动态更新语句
+        std::vector<std::string> updateFields;
+        std::vector<std::string> params;
+        int paramCounter = 1;
+
+        struct UpdateField {
+            std::string dbField;
+            std::string paramName;
+            bool isString;
+        };
+
+        std::vector<UpdateField> updateableFields = {
+            {"container_no", "container_no", true},
+            {"status", "status", true},
+            {"pickup_time", "pickup_time", true},
+            {"return_time", "return_time", true},
+            {"free_days", "free_days", false},
+            {"abnormal_status", "abnormal_status", true},
+            {"abnormal_desc", "abnormal_desc", true},
+            {"waybill_no", "waybill_no", true},
+            {"port", "port", true},
+            {"free_expired_time", "free_expired_time", false}
+        };
+
+        for (const auto& field : updateableFields) {
+            if (body.has(field.paramName)) {
+                if (field.isString) {
+                    std::string value = body[field.paramName].s();
+                    updateFields.push_back(field.dbField + " = $" + std::to_string(paramCounter));
+                    params.push_back(value);
+                } else {
+                    int value = body[field.paramName].i();
+                    updateFields.push_back(field.dbField + " = $" + std::to_string(paramCounter));
+                    params.push_back(std::to_string(value));
+                }
+                paramCounter++;
+            }
+        }
+
+        if (updateFields.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "No fields to update";
+            return crow::response(400, result);
+        }
+
+        updateFields.push_back("updated_at = CURRENT_TIMESTAMP");
+
+        std::string updateSql = "UPDATE container SET ";
+        for (size_t i = 0; i < updateFields.size(); i++) {
+            if (i > 0) updateSql += ", ";
+            updateSql += updateFields[i];
+        }
+        updateSql += " WHERE id = $" + std::to_string(paramCounter);
+        params.push_back(std::to_string(containerId));
+
+        txn.exec_params(updateSql, pqxx::prepare::make_dynamic_params(params));
+
+        result["retCode"] = 200;
+        result["msg"] = "Container updated successfully";
+        
+        txn.commit();
+        return crow::response(200, result);
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Update Container Error: " << e.what() << std::endl;
+        result["retCode"] = 500;
+        result["errorMsg"] = e.what();
+        return crow::response(500, result);
+    }
+}
+
+// ==================== 删除集装箱 ====================
+crow::response deleteContainerFunc(const crow::request& req, pqxx::connection& conn) {
+    crow::json::wvalue result;
+    
+    std::string token = req.get_header_value("token");
+    if (token.empty()) {
+        result["retCode"] = 401;
+        result["errorMsg"] = "Missing token";
+        return crow::response(401, result);
+    }
+
+    auto body = crow::json::load(req.body);
+    if (!body) {
+        result["retCode"] = 400;
+        result["errorMsg"] = "Request body error";
+        return crow::response(400, result);
+    }
+
+    try {
+        pqxx::work txn(conn);
+        
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{"user_management"})
+            .with_issuer("user_management");
+        verifier.verify(decoded);
+
+        // 获取要删除的ID列表
+        std::vector<int> ids;
+        
+        // 修复：Crow 中没有 is_array，使用 t() 检查类型
+        if (body.has("ids")) {
+            // 检查是否是数组（t() 返回 number 表示单个值）
+            try {
+                // 尝试遍历
+                for (const auto& item : body["ids"]) {
+                    ids.push_back(item.i());
+                }
+            } catch (...) {
+                // 如果不是数组，尝试作为单个值
+                ids.push_back(body["ids"].i());
+            }
+        } else if (body.has("id")) {
+            ids.push_back(body["id"].i());
+        } else {
+            result["retCode"] = 400;
+            result["errorMsg"] = "id or ids is required";
+            return crow::response(400, result);
+        }
+
+        if (ids.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "No valid ids provided";
+            return crow::response(400, result);
+        }
+
+        // 构建删除语句
+        std::string deleteSql = "DELETE FROM container WHERE id IN (";
+        for (size_t i = 0; i < ids.size(); i++) {
+            if (i > 0) deleteSql += ", ";
+            deleteSql += "$" + std::to_string(i + 1);
+        }
+        deleteSql += ")";
+
+        std::vector<std::string> params;
+        for (int id : ids) {
+            params.push_back(std::to_string(id));
+        }
+
+        pqxx::result res = txn.exec_params(deleteSql, pqxx::prepare::make_dynamic_params(params));
+        
+        result["retCode"] = 200;
+        result["msg"] = "Container(s) deleted successfully";
+        result["affected_rows"] = (int)res.affected_rows();
+        
+        txn.commit();
+        return crow::response(200, result);
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Delete Container Error: " << e.what() << std::endl;
+        result["retCode"] = 500;
+        result["errorMsg"] = e.what();
+        return crow::response(500, result);
+    }
+}
+
 crow::response queryContainersFunc(const crow::request& req, pqxx::connection& conn) {
     crow::json::wvalue result;
     
@@ -213,4 +544,7 @@ crow::response queryContainersFunc(const crow::request& req, pqxx::connection& c
     }
 }
 
+AUTO_REGISTER_CONTAINER_API("addContainer", addContainerFunc);
+AUTO_REGISTER_CONTAINER_API("deleteContainer", deleteContainerFunc);
+AUTO_REGISTER_CONTAINER_API("updateContainer", updateContainerFunc);
 AUTO_REGISTER_CONTAINER_API("queryContainers", queryContainersFunc);

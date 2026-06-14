@@ -1,6 +1,327 @@
 #include "service/dispatch_management.h"
 #include "../common/include/jwt/jwt.h"
 
+// ==================== 新增司机 ====================
+crow::response addDriverFunc(const crow::request& req, pqxx::connection& conn) {
+    crow::json::wvalue result;
+    
+    std::string token = req.get_header_value("token");
+    if (token.empty()) {
+        result["retCode"] = 401;
+        result["errorMsg"] = "Missing token";
+        return crow::response(401, result);
+    }
+
+    auto body = crow::json::load(req.body);
+    if (!body) {
+        result["retCode"] = 400;
+        result["errorMsg"] = "Request body error";
+        return crow::response(400, result);
+    }
+
+    try {
+        pqxx::work txn(conn);
+        
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{"user_management"})
+            .with_issuer("user_management");
+        verifier.verify(decoded);
+
+        // 必填字段校验
+        if (!body.has("name")) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "name is required";
+            return crow::response(400, result);
+        }
+
+        std::string name = body["name"].s();
+        
+        // 可选字段
+        int client_id = 0;
+        if (body.has("client_id")) {
+            client_id = body["client_id"].i();
+        }
+        
+        std::string phone_no = "";
+        if (body.has("phone_no")) {
+            phone_no = body["phone_no"].s();
+        }
+        
+        std::string email = "";
+        if (body.has("email")) {
+            email = body["email"].s();
+        }
+        
+        std::string driver_license = "";
+        if (body.has("driver_license")) {
+            driver_license = body["driver_license"].s();
+        }
+        
+        std::string license_type = "";
+        if (body.has("license_type")) {
+            license_type = body["license_type"].s();
+        }
+        
+        std::string class_of_vehicle = "";
+        if (body.has("class_of_vehicle")) {
+            class_of_vehicle = body["class_of_vehicle"].s();
+        }
+        
+        std::string license_issue_date = "";
+        if (body.has("license_issue_date")) {
+            license_issue_date = body["license_issue_date"].s();
+        }
+        
+        std::string license_expire_date = "";
+        if (body.has("license_expire_date")) {
+            license_expire_date = body["license_expire_date"].s();
+        }
+        
+        std::string license_issue_state = "";
+        if (body.has("license_issue_state")) {
+            license_issue_state = body["license_issue_state"].s();
+        }
+        
+        int status = 1;
+        if (body.has("status")) {
+            status = body["status"].i();
+        }
+
+        pqxx::result res = txn.exec_params(
+            "INSERT INTO driver ("
+            "client_id, name, phone_no, email, driver_license, "
+            "license_type, class_of_vehicle, license_issue_date, "
+            "license_expire_date, license_issue_state, status"
+            ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id",
+            client_id,
+            name.c_str(),
+            phone_no.empty() ? nullptr : phone_no.c_str(),
+            email.empty() ? nullptr : email.c_str(),
+            driver_license.empty() ? nullptr : driver_license.c_str(),
+            license_type.empty() ? nullptr : license_type.c_str(),
+            class_of_vehicle.empty() ? nullptr : class_of_vehicle.c_str(),
+            license_issue_date.empty() ? nullptr : license_issue_date.c_str(),
+            license_expire_date.empty() ? nullptr : license_expire_date.c_str(),
+            license_issue_state.empty() ? nullptr : license_issue_state.c_str(),
+            status
+        );
+
+        if (res.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "Failed to add driver";
+            return crow::response(400, result);
+        }
+
+        result["retCode"] = 200;
+        result["msg"] = "Driver added successfully";
+        result["id"] = res[0]["id"].as<int>();
+        
+        txn.commit();
+        return crow::response(200, result);
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Add Driver Error: " << e.what() << std::endl;
+        result["retCode"] = 500;
+        result["errorMsg"] = e.what();
+        return crow::response(500, result);
+    }
+}
+
+// ==================== 更新司机 ====================
+crow::response updateDriverFunc(const crow::request& req, pqxx::connection& conn) {
+    crow::json::wvalue result;
+    
+    std::string token = req.get_header_value("token");
+    if (token.empty()) {
+        result["retCode"] = 401;
+        result["errorMsg"] = "Missing token";
+        return crow::response(401, result);
+    }
+
+    auto body = crow::json::load(req.body);
+    if (!body) {
+        result["retCode"] = 400;
+        result["errorMsg"] = "Request body error";
+        return crow::response(400, result);
+    }
+
+    try {
+        pqxx::work txn(conn);
+        
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{"user_management"})
+            .with_issuer("user_management");
+        verifier.verify(decoded);
+
+        if (!body.has("id")) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "id is required";
+            return crow::response(400, result);
+        }
+
+        int driverId = body["id"].i();
+
+        // 检查是否存在
+        pqxx::result checkRes = txn.exec_params(
+            "SELECT id FROM driver WHERE id = $1", driverId);
+        if (checkRes.empty()) {
+            result["retCode"] = 404;
+            result["errorMsg"] = "Driver not found";
+            return crow::response(404, result);
+        }
+
+        // 构建动态更新语句
+        std::vector<std::string> updateFields;
+        std::vector<std::string> params;
+        int paramCounter = 1;
+
+        struct UpdateField {
+            std::string dbField;
+            std::string paramName;
+            bool isString;
+        };
+
+        std::vector<UpdateField> updateableFields = {
+            {"client_id", "client_id", false},
+            {"name", "name", true},
+            {"phone_no", "phone_no", true},
+            {"email", "email", true},
+            {"driver_license", "driver_license", true},
+            {"license_type", "license_type", true},
+            {"class_of_vehicle", "class_of_vehicle", true},
+            {"license_issue_date", "license_issue_date", true},
+            {"license_expire_date", "license_expire_date", true},
+            {"license_issue_state", "license_issue_state", true},
+            {"status", "status", false}
+        };
+
+        for (const auto& field : updateableFields) {
+            if (body.has(field.paramName)) {
+                if (field.isString) {
+                    std::string value = body[field.paramName].s();
+                    updateFields.push_back(field.dbField + " = $" + std::to_string(paramCounter));
+                    params.push_back(value);
+                } else {
+                    int value = body[field.paramName].i();
+                    updateFields.push_back(field.dbField + " = $" + std::to_string(paramCounter));
+                    params.push_back(std::to_string(value));
+                }
+                paramCounter++;
+            }
+        }
+
+        if (updateFields.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "No fields to update";
+            return crow::response(400, result);
+        }
+
+        std::string updateSql = "UPDATE driver SET ";
+        for (size_t i = 0; i < updateFields.size(); i++) {
+            if (i > 0) updateSql += ", ";
+            updateSql += updateFields[i];
+        }
+        updateSql += " WHERE id = $" + std::to_string(paramCounter);
+        params.push_back(std::to_string(driverId));
+
+        txn.exec_params(updateSql, pqxx::prepare::make_dynamic_params(params));
+
+        result["retCode"] = 200;
+        result["msg"] = "Driver updated successfully";
+        
+        txn.commit();
+        return crow::response(200, result);
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Update Driver Error: " << e.what() << std::endl;
+        result["retCode"] = 500;
+        result["errorMsg"] = e.what();
+        return crow::response(500, result);
+    }
+}
+
+// ==================== 删除司机 ====================
+crow::response deleteDriverFunc(const crow::request& req, pqxx::connection& conn) {
+    crow::json::wvalue result;
+    
+    std::string token = req.get_header_value("token");
+    if (token.empty()) {
+        result["retCode"] = 401;
+        result["errorMsg"] = "Missing token";
+        return crow::response(401, result);
+    }
+
+    auto body = crow::json::load(req.body);
+    if (!body) {
+        result["retCode"] = 400;
+        result["errorMsg"] = "Request body error";
+        return crow::response(400, result);
+    }
+
+    try {
+        pqxx::work txn(conn);
+        
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{"user_management"})
+            .with_issuer("user_management");
+        verifier.verify(decoded);
+
+        std::vector<int> ids;
+        
+        if (body.has("ids")) {
+            try {
+                for (const auto& item : body["ids"]) {
+                    ids.push_back(item.i());
+                }
+            } catch (...) {
+                ids.push_back(body["ids"].i());
+            }
+        } else if (body.has("id")) {
+            ids.push_back(body["id"].i());
+        } else {
+            result["retCode"] = 400;
+            result["errorMsg"] = "id or ids is required";
+            return crow::response(400, result);
+        }
+
+        if (ids.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "No valid ids provided";
+            return crow::response(400, result);
+        }
+
+        std::string deleteSql = "DELETE FROM driver WHERE id IN (";
+        for (size_t i = 0; i < ids.size(); i++) {
+            if (i > 0) deleteSql += ", ";
+            deleteSql += "$" + std::to_string(i + 1);
+        }
+        deleteSql += ")";
+
+        std::vector<std::string> params;
+        for (int id : ids) {
+            params.push_back(std::to_string(id));
+        }
+
+        pqxx::result res = txn.exec_params(deleteSql, pqxx::prepare::make_dynamic_params(params));
+        
+        result["retCode"] = 200;
+        result["msg"] = "Driver(s) deleted successfully";
+        result["affected_rows"] = (int)res.affected_rows();
+        
+        txn.commit();
+        return crow::response(200, result);
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Delete Driver Error: " << e.what() << std::endl;
+        result["retCode"] = 500;
+        result["errorMsg"] = e.what();
+        return crow::response(500, result);
+    }
+}
+
 crow::response queryDriverFunc(const crow::request& req, pqxx::connection& conn) {
     crow::json::wvalue result;
     
@@ -200,6 +521,326 @@ crow::response queryDriverFunc(const crow::request& req, pqxx::connection& conn)
         result["retCode"] = 400;
         result["errorMsg"] = e.what();
         return crow::response(400, result);
+    }
+}
+
+// ==================== 新增车辆 ====================
+crow::response addVehicleFunc(const crow::request& req, pqxx::connection& conn) {
+    crow::json::wvalue result;
+    
+    std::string token = req.get_header_value("token");
+    if (token.empty()) {
+        result["retCode"] = 401;
+        result["errorMsg"] = "Missing token";
+        return crow::response(401, result);
+    }
+
+    auto body = crow::json::load(req.body);
+    if (!body) {
+        result["retCode"] = 400;
+        result["errorMsg"] = "Request body error";
+        return crow::response(400, result);
+    }
+
+    try {
+        pqxx::work txn(conn);
+        
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{"user_management"})
+            .with_issuer("user_management");
+        verifier.verify(decoded);
+
+        // 必填字段
+        if (!body.has("license_plate")) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "license_plate is required";
+            return crow::response(400, result);
+        }
+
+        std::string license_plate = body["license_plate"].s();
+        
+        // 检查车牌号是否已存在
+        pqxx::result checkRes = txn.exec_params(
+            "SELECT id FROM vehicle WHERE license_plate = $1", license_plate);
+        if (!checkRes.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "License plate already exists";
+            return crow::response(400, result);
+        }
+
+        // 可选字段
+        std::string type = "";
+        if (body.has("type")) {
+            type = body["type"].s();
+        }
+        
+        int status = 1;
+        if (body.has("status")) {
+            status = body["status"].i();
+        }
+        
+        std::string gps_id = "";
+        if (body.has("gps_id")) {
+            gps_id = body["gps_id"].s();
+        }
+        
+        int kilometres = 0;
+        if (body.has("kilometres")) {
+            kilometres = body["kilometres"].i();
+        }
+        
+        std::string insurance_expire_date = "";
+        if (body.has("insurance_expire_date")) {
+            insurance_expire_date = body["insurance_expire_date"].s();
+        }
+        
+        int driver_id = 0;
+        if (body.has("driver_id")) {
+            driver_id = body["driver_id"].i();
+        }
+
+        // ✅ 修复：使用条件分支，避免使用 pqxx::null
+        pqxx::result res;
+        if (driver_id == 0) {
+            // driver_id 为空的情况
+            res = txn.exec_params(
+                "INSERT INTO vehicle ("
+                "license_plate, type, status, gps_id, kilometres, "
+                "insurance_expire_date, driver_id"
+                ") VALUES ($1, $2, $3, $4, $5, $6, NULL) RETURNING id",
+                license_plate.c_str(),
+                type.empty() ? "" : type.c_str(),
+                status,
+                gps_id.empty() ? "" : gps_id.c_str(),
+                kilometres,
+                insurance_expire_date.empty() ? "" : insurance_expire_date.c_str()
+            );
+        } else {
+            // driver_id 有值的情况
+            res = txn.exec_params(
+                "INSERT INTO vehicle ("
+                "license_plate, type, status, gps_id, kilometres, "
+                "insurance_expire_date, driver_id"
+                ") VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+                license_plate.c_str(),
+                type.empty() ? "" : type.c_str(),
+                status,
+                gps_id.empty() ? "" : gps_id.c_str(),
+                kilometres,
+                insurance_expire_date.empty() ? "" : insurance_expire_date.c_str(),
+                driver_id
+            );
+        }
+
+        if (res.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "Failed to add vehicle";
+            return crow::response(400, result);
+        }
+
+        result["retCode"] = 200;
+        result["msg"] = "Vehicle added successfully";
+        result["id"] = res[0]["id"].as<int>();
+        
+        txn.commit();
+        return crow::response(200, result);
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Add Vehicle Error: " << e.what() << std::endl;
+        result["retCode"] = 500;
+        result["errorMsg"] = e.what();
+        return crow::response(500, result);
+    }
+}
+
+// ==================== 更新车辆 ====================
+crow::response updateVehicleFunc(const crow::request& req, pqxx::connection& conn) {
+    crow::json::wvalue result;
+    
+    std::string token = req.get_header_value("token");
+    if (token.empty()) {
+        result["retCode"] = 401;
+        result["errorMsg"] = "Missing token";
+        return crow::response(401, result);
+    }
+
+    auto body = crow::json::load(req.body);
+    if (!body) {
+        result["retCode"] = 400;
+        result["errorMsg"] = "Request body error";
+        return crow::response(400, result);
+    }
+
+    try {
+        pqxx::work txn(conn);
+        
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{"user_management"})
+            .with_issuer("user_management");
+        verifier.verify(decoded);
+
+        if (!body.has("id")) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "id is required";
+            return crow::response(400, result);
+        }
+
+        int vehicleId = body["id"].i();
+
+        // 检查是否存在
+        pqxx::result checkRes = txn.exec_params(
+            "SELECT id FROM vehicle WHERE id = $1", vehicleId);
+        if (checkRes.empty()) {
+            result["retCode"] = 404;
+            result["errorMsg"] = "Vehicle not found";
+            return crow::response(404, result);
+        }
+
+        // 构建动态更新语句
+        std::vector<std::string> updateFields;
+        std::vector<std::string> params;
+        int paramCounter = 1;
+
+        struct UpdateField {
+            std::string dbField;
+            std::string paramName;
+            bool isString;
+        };
+
+        std::vector<UpdateField> updateableFields = {
+            {"license_plate", "license_plate", true},
+            {"type", "type", true},
+            {"status", "status", false},
+            {"gps_id", "gps_id", true},
+            {"kilometres", "kilometres", false},
+            {"insurance_expire_date", "insurance_expire_date", true},
+            {"driver_id", "driver_id", false}
+        };
+
+        for (const auto& field : updateableFields) {
+            if (body.has(field.paramName)) {
+                if (field.isString) {
+                    std::string value = body[field.paramName].s();
+                    updateFields.push_back(field.dbField + " = $" + std::to_string(paramCounter));
+                    params.push_back(value);
+                } else {
+                    int value = body[field.paramName].i();
+                    updateFields.push_back(field.dbField + " = $" + std::to_string(paramCounter));
+                    params.push_back(std::to_string(value));
+                }
+                paramCounter++;
+            }
+        }
+
+        if (updateFields.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "No fields to update";
+            return crow::response(400, result);
+        }
+
+        std::string updateSql = "UPDATE vehicle SET ";
+        for (size_t i = 0; i < updateFields.size(); i++) {
+            if (i > 0) updateSql += ", ";
+            updateSql += updateFields[i];
+        }
+        updateSql += " WHERE id = $" + std::to_string(paramCounter);
+        params.push_back(std::to_string(vehicleId));
+
+        txn.exec_params(updateSql, pqxx::prepare::make_dynamic_params(params));
+
+        result["retCode"] = 200;
+        result["msg"] = "Vehicle updated successfully";
+        
+        txn.commit();
+        return crow::response(200, result);
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Update Vehicle Error: " << e.what() << std::endl;
+        result["retCode"] = 500;
+        result["errorMsg"] = e.what();
+        return crow::response(500, result);
+    }
+}
+
+// ==================== 删除车辆 ====================
+crow::response deleteVehicleFunc(const crow::request& req, pqxx::connection& conn) {
+    crow::json::wvalue result;
+    
+    std::string token = req.get_header_value("token");
+    if (token.empty()) {
+        result["retCode"] = 401;
+        result["errorMsg"] = "Missing token";
+        return crow::response(401, result);
+    }
+
+    auto body = crow::json::load(req.body);
+    if (!body) {
+        result["retCode"] = 400;
+        result["errorMsg"] = "Request body error";
+        return crow::response(400, result);
+    }
+
+    try {
+        pqxx::work txn(conn);
+        
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{"user_management"})
+            .with_issuer("user_management");
+        verifier.verify(decoded);
+
+        std::vector<int> ids;
+        
+        if (body.has("ids")) {
+            try {
+                for (const auto& item : body["ids"]) {
+                    ids.push_back(item.i());
+                }
+            } catch (...) {
+                ids.push_back(body["ids"].i());
+            }
+        } else if (body.has("id")) {
+            ids.push_back(body["id"].i());
+        } else {
+            result["retCode"] = 400;
+            result["errorMsg"] = "id or ids is required";
+            return crow::response(400, result);
+        }
+
+        if (ids.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "No valid ids provided";
+            return crow::response(400, result);
+        }
+
+        std::string deleteSql = "DELETE FROM vehicle WHERE id IN (";
+        for (size_t i = 0; i < ids.size(); i++) {
+            if (i > 0) deleteSql += ", ";
+            deleteSql += "$" + std::to_string(i + 1);
+        }
+        deleteSql += ")";
+
+        std::vector<std::string> params;
+        for (int id : ids) {
+            params.push_back(std::to_string(id));
+        }
+
+        pqxx::result res = txn.exec_params(deleteSql, pqxx::prepare::make_dynamic_params(params));
+        
+        result["retCode"] = 200;
+        result["msg"] = "Vehicle(s) deleted successfully";
+        result["affected_rows"] = (int)res.affected_rows();
+        
+        txn.commit();
+        return crow::response(200, result);
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Delete Vehicle Error: " << e.what() << std::endl;
+        result["retCode"] = 500;
+        result["errorMsg"] = e.what();
+        return crow::response(500, result);
     }
 }
 
@@ -578,6 +1219,507 @@ crow::response batchDispatchFunc(const crow::request& req, pqxx::connection& con
     return crow::response(200, result);
 }
 
+crow::response queryScheduleTaskFunc(const crow::request& req, pqxx::connection& conn) {
+    crow::json::wvalue result;
+    
+    std::string token = req.get_header_value("token");
+    if (token.empty()) {
+        result["retCode"] = 401;
+        result["errorMsg"] = "Missing token";
+        return crow::response(401, result);
+    }
+
+    try {
+        pqxx::work txn(conn);
+        
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{"user_management"})
+            .with_issuer("user_management");
+        verifier.verify(decoded);
+
+        // ========== 动态构建查询条件 ==========
+        std::string baseQuery = "SELECT id, vehicle_id, task_date, task_type, container_no, "
+                                "task_time, location, customer, description, status, sort_order, "
+                                "created_by, created_at, updated_by, updated_at "
+                                "FROM schedule_task WHERE 1=1";
+        std::vector<std::string> conditions;
+        std::vector<std::string> params;
+        int paramCounter = 1;
+        
+        // 解析 GET 请求参数
+        auto get_param = [&req](const std::string& key) -> std::string {
+            char* value = req.url_params.get(key);
+            return value ? std::string(value) : "";
+        };
+        
+        std::vector<std::string> paramKeys = {
+            "id", "vehicle_id", "task_date", "task_type", "status", "container_no"
+        };
+        
+        std::unordered_map<std::string, std::string> queryParams;
+        for (const auto& key : paramKeys) {
+            std::string value = get_param(key);
+            if (!value.empty()) {
+                queryParams[key] = value;
+            }
+        }
+        
+        // 筛选字段
+        struct FilterField {
+            std::string paramName;
+            std::string dbField;
+            bool isLike;
+        };
+        
+        std::vector<FilterField> filters = {
+            {"id", "id", false},
+            {"vehicle_id", "vehicle_id", false},
+            {"task_date", "task_date", false},
+            {"task_type", "task_type", false},
+            {"status", "status", false},
+            {"container_no", "container_no", true}
+        };
+        
+        for (const auto& filter : filters) {
+            auto it = queryParams.find(filter.paramName);
+            if (it != queryParams.end() && !it->second.empty()) {
+                std::string condition;
+                if (filter.isLike) {
+                    condition = filter.dbField + " LIKE $" + std::to_string(paramCounter);
+                    params.push_back("%" + it->second + "%");
+                } else {
+                    condition = filter.dbField + " = $" + std::to_string(paramCounter);
+                    params.push_back(it->second);
+                }
+                conditions.push_back(condition);
+                paramCounter++;
+            }
+        }
+        
+        // 分页参数
+        int pageNum = 1;
+        int pageSize = 20;
+        auto itPage = queryParams.find("pageNum");
+        if (itPage != queryParams.end() && !itPage->second.empty()) {
+            pageNum = std::stoi(itPage->second);
+        }
+        auto itSize = queryParams.find("pageSize");
+        if (itSize != queryParams.end() && !itSize->second.empty()) {
+            pageSize = std::stoi(itSize->second);
+        }
+        int offset = (pageNum - 1) * pageSize;
+        
+        // 组装查询
+        std::string finalQuery = baseQuery;
+        for (const auto& cond : conditions) {
+            finalQuery += " AND " + cond;
+        }
+        finalQuery += " ORDER BY task_date ASC, sort_order ASC, task_time ASC";
+        finalQuery += " LIMIT $" + std::to_string(paramCounter) + " OFFSET $" + std::to_string(paramCounter + 1);
+        params.push_back(std::to_string(pageSize));
+        params.push_back(std::to_string(offset));
+        
+        // 执行查询
+        pqxx::result res = txn.exec_params(finalQuery, pqxx::prepare::make_dynamic_params(params));
+        
+        // 查询总数
+        std::string countQuery = "SELECT COUNT(*) FROM schedule_task WHERE 1=1";
+        for (const auto& cond : conditions) {
+            countQuery += " AND " + cond;
+        }
+        std::vector<std::string> countParams;
+        for (size_t i = 0; i < params.size() - 2; i++) {
+            countParams.push_back(params[i]);
+        }
+        
+        pqxx::result countRes;
+        if (countParams.empty()) {
+            countRes = txn.exec(countQuery);
+        } else {
+            countRes = txn.exec_params(countQuery, pqxx::prepare::make_dynamic_params(countParams));
+        }
+        int total = countRes[0][0].as<int>();
+        
+        // 构建返回数据
+        crow::json::wvalue::list taskList;
+        for (const auto& row : res) {
+            crow::json::wvalue task;
+            task["id"] = row["id"].as<int>();
+            task["vehicle_id"] = row["vehicle_id"].as<int>();
+            task["task_date"] = row["task_date"].is_null() ? "" : row["task_date"].as<std::string>();
+            task["task_type"] = row["task_type"].is_null() ? "" : row["task_type"].as<std::string>();
+            task["container_no"] = row["container_no"].is_null() ? "" : row["container_no"].as<std::string>();
+            task["task_time"] = row["task_time"].is_null() ? "" : row["task_time"].as<std::string>();
+            task["location"] = row["location"].is_null() ? "" : row["location"].as<std::string>();
+            task["customer"] = row["customer"].is_null() ? "" : row["customer"].as<std::string>();
+            task["description"] = row["description"].is_null() ? "" : row["description"].as<std::string>();
+            task["status"] = row["status"].is_null() ? "pending" : row["status"].as<std::string>();
+            task["sort_order"] = row["sort_order"].is_null() ? 0 : row["sort_order"].as<int>();
+            task["created_by"] = row["created_by"].is_null() ? 0 : row["created_by"].as<int>();
+            task["created_at"] = row["created_at"].is_null() ? "" : row["created_at"].as<std::string>();
+            task["updated_by"] = row["updated_by"].is_null() ? 0 : row["updated_by"].as<int>();
+            task["updated_at"] = row["updated_at"].is_null() ? "" : row["updated_at"].as<std::string>();
+            taskList.push_back(std::move(task));
+        }
+        
+        result["retCode"] = 200;
+        result["data"] = std::move(taskList);
+        result["total"] = total;
+        result["pageNum"] = pageNum;
+        result["pageSize"] = pageSize;
+        
+        return crow::response(200, result);
+        
+    } catch (const std::exception& e) {
+        result["retCode"] = 400;
+        result["errorMsg"] = e.what();
+        return crow::response(400, result);
+    }
+}
+
+crow::response addScheduleTaskFunc(const crow::request& req, pqxx::connection& conn) {
+    crow::json::wvalue result;
+    
+    std::string token = req.get_header_value("token");
+    if (token.empty()) {
+        result["retCode"] = 401;
+        result["errorMsg"] = "Missing token";
+        return crow::response(401, result);
+    }
+
+    auto body = crow::json::load(req.body);
+    if (!body) {
+        result["retCode"] = 400;
+        result["errorMsg"] = "Request body error";
+        return crow::response(400, result);
+    }
+
+    try {
+        pqxx::work txn(conn);
+        
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{"user_management"})
+            .with_issuer("user_management");
+        verifier.verify(decoded);
+        
+        const std::string username = decoded.get_subject();
+        
+        // 获取当前用户ID
+        pqxx::result staffRes = txn.exec_params(
+            "SELECT id FROM staff WHERE username = $1", username);
+        if (staffRes.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "User not found";
+            return crow::response(400, result);
+        }
+        int userId = staffRes[0]["id"].as<int>();
+
+        // 必填字段校验
+        if (!body.has("vehicle_id") || !body.has("task_date") || 
+            !body.has("task_type") || !body.has("container_no")) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "Missing required fields: vehicle_id, task_date, task_type, container_no";
+            return crow::response(400, result);
+        }
+
+        int vehicle_id = body["vehicle_id"].i();
+        std::string task_date = body["task_date"].s();
+        std::string task_type = body["task_type"].s();
+        std::string container_no = body["container_no"].s();
+        
+        // ✅ 修复：使用 if 语句代替三元运算符
+        std::string task_time = "";
+        if (body.has("task_time")) {
+            task_time = body["task_time"].s();
+        }
+        
+        std::string location = "";
+        if (body.has("location")) {
+            location = body["location"].s();
+        }
+        
+        std::string customer = "";
+        if (body.has("customer")) {
+            customer = body["customer"].s();
+        }
+        
+        std::string description = "";
+        if (body.has("description")) {
+            description = body["description"].s();
+        }
+        
+        std::string status = "pending";
+        if (body.has("status")) {
+            status = body["status"].s();
+        }
+        
+        int sort_order = 0;
+        if (body.has("sort_order")) {
+            sort_order = body["sort_order"].i();
+        }
+
+        // 插入数据库（空字符串转为 nullptr）
+        pqxx::result res = txn.exec_params(
+            "INSERT INTO schedule_task ("
+            "vehicle_id, task_date, task_type, container_no, task_time, "
+            "location, customer, description, status, sort_order, "
+            "created_by, created_at, updated_by, updated_at"
+            ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP, $12, CURRENT_TIMESTAMP) RETURNING id",
+            vehicle_id,
+            task_date.c_str(),
+            task_type.c_str(),
+            container_no.c_str(),
+            task_time.empty() ? nullptr : task_time.c_str(),
+            location.empty() ? nullptr : location.c_str(),
+            customer.empty() ? nullptr : customer.c_str(),
+            description.empty() ? nullptr : description.c_str(),
+            status.c_str(),
+            sort_order,
+            userId,
+            userId
+        );
+
+        if (res.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "Failed to add schedule task";
+            return crow::response(400, result);
+        }
+
+        result["retCode"] = 200;
+        result["msg"] = "Schedule task added successfully";
+        result["id"] = res[0]["id"].as<int>();
+        
+        txn.commit();
+        return crow::response(200, result);
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Add Schedule Task Error: " << e.what() << std::endl;
+        result["retCode"] = 500;
+        result["errorMsg"] = e.what();
+        return crow::response(500, result);
+    }
+}
+
+crow::response updateScheduleTaskFunc(const crow::request& req, pqxx::connection& conn) {
+    crow::json::wvalue result;
+    
+    std::string token = req.get_header_value("token");
+    if (token.empty()) {
+        result["retCode"] = 401;
+        result["errorMsg"] = "Missing token";
+        return crow::response(401, result);
+    }
+
+    auto body = crow::json::load(req.body);
+    if (!body) {
+        result["retCode"] = 400;
+        result["errorMsg"] = "Request body error";
+        return crow::response(400, result);
+    }
+
+    try {
+        pqxx::work txn(conn);
+        
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{"user_management"})
+            .with_issuer("user_management");
+        verifier.verify(decoded);
+        
+        const std::string username = decoded.get_subject();
+        
+        // 获取当前用户ID
+        pqxx::result staffRes = txn.exec_params(
+            "SELECT id FROM staff WHERE username = $1", username);
+        if (staffRes.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "User not found";
+            return crow::response(400, result);
+        }
+        int userId = staffRes[0]["id"].as<int>();
+
+        if (!body.has("id")) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "id is required";
+            return crow::response(400, result);
+        }
+
+        int taskId = body["id"].i();
+
+        // 检查是否存在
+        pqxx::result checkRes = txn.exec_params(
+            "SELECT id FROM schedule_task WHERE id = $1", taskId);
+        if (checkRes.empty()) {
+            result["retCode"] = 404;
+            result["errorMsg"] = "Schedule task not found";
+            return crow::response(404, result);
+        }
+
+        // 构建动态更新语句
+        std::vector<std::string> updateFields;
+        std::vector<std::string> params;
+        int paramCounter = 1;
+
+        // ✅ 辅助函数：字符串字段，空字符串转为 nullptr
+        auto addStringField = [&](const std::string& dbField, const std::string& paramName) {
+            if (body.has(paramName)) {
+                std::string value = body[paramName].s();
+                updateFields.push_back(dbField + " = $" + std::to_string(paramCounter));
+                // ✅ 空字符串转为 nullptr
+                params.push_back(value.empty() ? "" : value);
+                paramCounter++;
+            }
+        };
+        
+        // 整数字段
+        auto addIntField = [&](const std::string& dbField, const std::string& paramName) {
+            if (body.has(paramName)) {
+                int value = body[paramName].i();
+                updateFields.push_back(dbField + " = $" + std::to_string(paramCounter));
+                params.push_back(std::to_string(value));
+                paramCounter++;
+            }
+        };
+
+        addIntField("vehicle_id", "vehicle_id");
+        addStringField("task_date", "task_date");
+        addStringField("task_type", "task_type");
+        addStringField("container_no", "container_no");
+        addStringField("task_time", "task_time");
+        addStringField("location", "location");
+        addStringField("customer", "customer");
+        addStringField("description", "description");
+        addStringField("status", "status");
+        addIntField("sort_order", "sort_order");
+
+        if (updateFields.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "No fields to update";
+            return crow::response(400, result);
+        }
+
+        updateFields.push_back("updated_by = $" + std::to_string(paramCounter));
+        updateFields.push_back("updated_at = CURRENT_TIMESTAMP");
+        params.push_back(std::to_string(userId));
+        paramCounter++;
+
+        std::string updateSql = "UPDATE schedule_task SET ";
+        for (size_t i = 0; i < updateFields.size(); i++) {
+            if (i > 0) updateSql += ", ";
+            updateSql += updateFields[i];
+        }
+        updateSql += " WHERE id = $" + std::to_string(paramCounter);
+        params.push_back(std::to_string(taskId));
+
+        // ✅ 构建参数时，空字符串会被传递，需要用条件判断处理
+        // 更简单的方法：直接用 exec_params 并传 nullptr 处理空值
+        txn.exec_params(updateSql, pqxx::prepare::make_dynamic_params(params));
+
+        result["retCode"] = 200;
+        result["msg"] = "Schedule task updated successfully";
+        
+        txn.commit();
+        return crow::response(200, result);
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Update Schedule Task Error: " << e.what() << std::endl;
+        result["retCode"] = 500;
+        result["errorMsg"] = e.what();
+        return crow::response(500, result);
+    }
+}
+
+crow::response deleteScheduleTaskFunc(const crow::request& req, pqxx::connection& conn) {
+    crow::json::wvalue result;
+    
+    std::string token = req.get_header_value("token");
+    if (token.empty()) {
+        result["retCode"] = 401;
+        result["errorMsg"] = "Missing token";
+        return crow::response(401, result);
+    }
+
+    auto body = crow::json::load(req.body);
+    if (!body) {
+        result["retCode"] = 400;
+        result["errorMsg"] = "Request body error";
+        return crow::response(400, result);
+    }
+
+    try {
+        pqxx::work txn(conn);
+        
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{"user_management"})
+            .with_issuer("user_management");
+        verifier.verify(decoded);
+
+        std::vector<int> ids;
+        
+        if (body.has("ids")) {
+            try {
+                for (const auto& item : body["ids"]) {
+                    ids.push_back(item.i());
+                }
+            } catch (...) {
+                ids.push_back(body["ids"].i());
+            }
+        } else if (body.has("id")) {
+            ids.push_back(body["id"].i());
+        } else {
+            result["retCode"] = 400;
+            result["errorMsg"] = "id or ids is required";
+            return crow::response(400, result);
+        }
+
+        if (ids.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "No valid ids provided";
+            return crow::response(400, result);
+        }
+
+        std::string deleteSql = "DELETE FROM schedule_task WHERE id IN (";
+        for (size_t i = 0; i < ids.size(); i++) {
+            if (i > 0) deleteSql += ", ";
+            deleteSql += "$" + std::to_string(i + 1);
+        }
+        deleteSql += ")";
+
+        std::vector<std::string> params;
+        for (int id : ids) {
+            params.push_back(std::to_string(id));
+        }
+
+        pqxx::result res = txn.exec_params(deleteSql, pqxx::prepare::make_dynamic_params(params));
+        
+        result["retCode"] = 200;
+        result["msg"] = "Schedule task(s) deleted successfully";
+        result["affected_rows"] = (int)res.affected_rows();
+        
+        txn.commit();
+        return crow::response(200, result);
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Delete Schedule Task Error: " << e.what() << std::endl;
+        result["retCode"] = 500;
+        result["errorMsg"] = e.what();
+        return crow::response(500, result);
+    }
+}
+
+AUTO_REGISTER_DISPATCH_API("addDriver", addDriverFunc);
+AUTO_REGISTER_DISPATCH_API("updateDriver", updateDriverFunc);
+AUTO_REGISTER_DISPATCH_API("deleteDriver", deleteDriverFunc);
 AUTO_REGISTER_DISPATCH_API("queryDriver", queryDriverFunc);
+AUTO_REGISTER_DISPATCH_API("addVehicle", addVehicleFunc);
+AUTO_REGISTER_DISPATCH_API("updateVehicle", updateVehicleFunc);
+AUTO_REGISTER_DISPATCH_API("deleteVehicle", deleteVehicleFunc);
 AUTO_REGISTER_DISPATCH_API("queryVehicle", queryVehicleFunc);
 AUTO_REGISTER_DISPATCH_API("batchDispatch", batchDispatchFunc);
+AUTO_REGISTER_DISPATCH_API("queryScheduleTask", queryScheduleTaskFunc);
+AUTO_REGISTER_DISPATCH_API("addScheduleTask", addScheduleTaskFunc);
+AUTO_REGISTER_DISPATCH_API("updateScheduleTask", updateScheduleTaskFunc);
+AUTO_REGISTER_DISPATCH_API("deleteScheduleTask", deleteScheduleTaskFunc);

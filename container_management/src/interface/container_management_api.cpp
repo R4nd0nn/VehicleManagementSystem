@@ -29,6 +29,51 @@ int main() {
     // 初始化连接池
     g_db_pool = std::make_shared<ConnectionPool>(conn_str, 10);
 
+    auto addContainerFunc = ContainerControllerFactory::instance().create("addContainer");
+    if (addContainerFunc) {                        
+        CROW_ROUTE(app, "/container_mng/addContainer").methods("POST"_method)
+        ([addContainerFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue result;
+                result["retCode"] = 400;
+                result["errorMsg"] = "Database connection failed";
+                return crow::response(400, result);
+            }
+            return addContainerFunc(req, *connGuard);
+        });
+    }
+
+    auto deleteContainerFunc = ContainerControllerFactory::instance().create("deleteContainer");
+    if (deleteContainerFunc) {                        
+        CROW_ROUTE(app, "/container_mng/deleteContainer").methods("POST"_method)
+        ([deleteContainerFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue result;
+                result["retCode"] = 400;
+                result["errorMsg"] = "Database connection failed";
+                return crow::response(400, result);
+            }
+            return deleteContainerFunc(req, *connGuard);
+        });
+    }
+
+    auto updateContainerFunc = ContainerControllerFactory::instance().create("updateContainer");
+    if (updateContainerFunc) {                        
+        CROW_ROUTE(app, "/container_mng/updateContainer").methods("POST"_method)
+        ([updateContainerFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue result;
+                result["retCode"] = 400;
+                result["errorMsg"] = "Database connection failed";
+                return crow::response(400, result);
+            }
+            return updateContainerFunc(req, *connGuard);
+        });
+    }
+
     auto queryContainersFunc = ContainerControllerFactory::instance().create("queryContainers");
     if (queryContainersFunc) {                        
         CROW_ROUTE(app, "/container_mng/queryContainers").methods("GET"_method)
