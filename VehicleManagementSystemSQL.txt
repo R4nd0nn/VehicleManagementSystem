@@ -4,31 +4,41 @@
 DROP TABLE IF EXISTS vehicle;
 CREATE TABLE IF NOT EXISTS vehicle (
     id SERIAL PRIMARY KEY,
-    license_plate VARCHAR(255),
-    type VARCHAR(255),
-    driver_id INTEGER, 
-    status INTEGER, --1 未使用, 2 使用中, 3 维护中, 4 停用, 5 车辆异常
-    gps_id VARCHAR(255),
-    kilometres INTEGER,
-    insurance_expire_date DATE
+    license_plate VARCHAR(255),           -- 1. 车牌号码
+    type VARCHAR(255),                    -- 2. 车辆类型: semi trailer/B double/A double/retractable trailer/light trailer/Sideloader/Quad trailer/Low Loader
+    gps_id VARCHAR(255),                  -- 3. GPS ID
+    kilometres INTEGER,                   -- 4. 里程数
+    rego_expire_date DATE,                -- 5. Rego 过期日期 (新增)
+    tag_number VARCHAR(255),              -- 6. Tag number (新增)
+    fuel_card_number VARCHAR(255),        -- 7. Fuel card number (新增)
+    status INTEGER DEFAULT 1,             -- 8. 车辆状态: 1 未使用, 2 使用中, 3 维护中, 4 停用, 5 车辆异常
+    driver_id INTEGER,                    -- 9. 关联司机ID
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- 2. DRIVER 司机信息表
 DROP TABLE IF EXISTS driver;
 CREATE TABLE IF NOT EXISTS driver (
     id SERIAL PRIMARY KEY,
-    client_id INTEGER,
-    name VARCHAR(255),
-    phone_no INTEGER,
-    email VARCHAR(255),
-    driver_license VARCHAR(255),
-    license_type VARCHAR(255),
-    class_of_vehicle VARCHAR(255),
-    license_issue_date DATE,
-    license_expire_date DATE,
-    license_issue_state VARCHAR(255),
-    status INTEGER --1 空闲, 2 工作中, 3 请假中
+    client_id INTEGER,                    -- 员工ID
+    name VARCHAR(255),                    -- 姓名
+    phone_no VARCHAR(20),                 -- 电话号码
+    email VARCHAR(255),                   -- 邮箱
+    driver_license VARCHAR(255),          -- 驾照号码
+    license_type VARCHAR(50),             -- 驾照类型: MR/HR/HC/MC
+    license_expire_date DATE,             -- 驾照过期日期
+    msic_card_no VARCHAR(255),            -- MSIC card number
+    msic_card_expire_date DATE,           -- MSIC card 过期日期
+    dg_license_no VARCHAR(255),           -- DG License number
+    dg_license_expire_date DATE,          -- DG License 过期日期
+    status INTEGER DEFAULT 1,             -- 司机状态: 1空闲, 2工作中, 3请假中
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
 
 -- 3. TASK 司机任务表
 DROP TABLE IF EXISTS task;
@@ -61,18 +71,23 @@ CREATE TABLE IF NOT EXISTS exception (
 DROP TABLE IF EXISTS container;
 CREATE TABLE IF NOT EXISTS container (
     id SERIAL PRIMARY KEY,
-    container_no VARCHAR(50) NOT NULL,
-    status VARCHAR(20) NOT NULL,
-    pickup_time TIMESTAMP,
-    return_time TIMESTAMP,
-    free_days INT DEFAULT 7,
-    abnormal_status VARCHAR(50),
-    abnormal_desc VARCHAR(500),
-    waybill_no VARCHAR(50),
-    port VARCHAR(100),
-    free_expired_time INTEGER,
-    created_at TIMESTAMP,
-    updated_at TIMESTAMP
+    container_no VARCHAR(50) NOT NULL UNIQUE,              -- 箱号（唯一）
+    status VARCHAR(20) NOT NULL DEFAULT '空柜',            -- 箱状态：满柜/空柜
+    pickup_time TIMESTAMP,                                 -- 提箱时间
+    return_time TIMESTAMP,                                 -- 还柜时间（Last free detention）
+    free_days INT DEFAULT 7,                               -- 免费天数
+    free_expired_time INT DEFAULT 7,                       -- 剩余天数（前端显示用）
+    abnormal_status VARCHAR(50),                           -- 异常状态
+    abnormal_desc VARCHAR(500),                            -- 异常描述
+    waybill_no VARCHAR(50),                                -- 关联运单号
+    port VARCHAR(100),                                     -- 港口
+    customer_requirement TEXT,                             -- 客人要求
+    created_by INT,                                        -- 创建人ID
+    updated_by INT,                                        -- 更新人ID
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TIMESTAMP,                                  -- 删除时间（NULL表示未删除）
+    deleted_by INT                                         -- 删除人ID
 );
 
 -- 6. FEE 任务费用表
@@ -130,7 +145,7 @@ CREATE TABLE IF NOT EXISTS invoice (
 DROP TABLE IF EXISTS staff;
 CREATE TABLE IF NOT EXISTS staff (
     id SERIAL PRIMARY KEY,
-    role INTEGER,
+    role INTEGER, -- 0: 管理员, 1: 股东, 2: 操作人员, 3: 财务, 4: 司机
     name VARCHAR(255),
     username VARCHAR(255),
     gender INTEGER,
@@ -140,4 +155,76 @@ CREATE TABLE IF NOT EXISTS staff (
     email_address VARCHAR(255),
     phone_no VARCHAR(255),
     password VARCHAR(255)
+);
+
+-- 10. YARD_SLOT 场地位置表
+DROP TABLE IF EXISTS yard_slot;
+CREATE TABLE IF NOT EXISTS yard_slot (
+    id SERIAL PRIMARY KEY,
+    slot_name VARCHAR(50) NOT NULL,                    -- 位置名称: C1, C2, Trailer 1, Trailer 2...
+    area_type VARCHAR(20) NOT NULL,                    -- 区域类型: container / parking
+    status VARCHAR(20) DEFAULT 'empty',                -- 状态: empty / occupied / reserved
+    container_no VARCHAR(50),                          -- 货柜号（占用时有值）
+    order_id VARCHAR(50),                              -- 关联订单号
+    driver_name VARCHAR(100),                          -- 关联司机姓名
+    in_time TIMESTAMP,                                 -- 进场时间
+    remark TEXT,                                       -- 备注
+    created_by INT,                                    -- 创建人ID
+    updated_by INT,                                    -- 更新人ID
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TIMESTAMP,                              -- 软删除
+    deleted_by INT,                                    -- 删除人ID
+    UNIQUE(slot_name, area_type)                       -- 同一区域内名称唯一
+);
+
+-- 11. YARD_LOG 场地操作日志表
+DROP TABLE IF EXISTS yard_log;
+CREATE TABLE IF NOT EXISTS yard_log (
+    id SERIAL PRIMARY KEY,
+    slot_id INT NOT NULL,                              -- 关联位置ID
+    slot_name VARCHAR(50) NOT NULL,                    -- 位置名称（冗余，方便查询）
+    area_type VARCHAR(20) NOT NULL,                    -- 区域类型（冗余）
+    action_type VARCHAR(30) NOT NULL,                  -- in / out / reserve / cancel_reserve / add / delete / edit
+    container_no VARCHAR(50),                          -- 货柜号
+    order_id VARCHAR(50),                              -- 订单号
+    driver_name VARCHAR(100),                          -- 司机姓名
+    remark TEXT,                                       -- 备注
+    operator_id INT,                                   -- 操作人ID
+    operator_name VARCHAR(100),                        -- 操作人姓名
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 12. 每日看板
+DROP TABLE IF EXISTS schedule_task;
+CREATE TABLE IF NOT EXISTS schedule_task (
+    id BIGSERIAL PRIMARY KEY,
+    vehicle_id BIGINT NOT NULL,                          -- 所属车辆ID
+    task_date DATE NOT NULL,                             -- 任务日期
+    task_type VARCHAR(100) NOT NULL,                     -- 任务类型（用户自定义输入，如：提箱、送箱、还箱）
+    start_point VARCHAR(500),                            -- 起始点（原 location 字段改名）
+    end_point VARCHAR(500),                              -- 终点（新增）
+    task_time TIME,                                      -- 任务时间
+    customer VARCHAR(200),                               -- 客户名称
+    description TEXT,                                    -- 备注/描述
+    status VARCHAR(20) DEFAULT 'pending',                -- 状态：pending/in_progress/completed/cancelled
+    sort_order INT DEFAULT 0,                            -- 排序顺序
+    created_by INT,                                      -- 创建人ID
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,      -- 创建时间
+    updated_by INT,                                      -- 更新人ID
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP       -- 更新时间
+);
+
+-- 13. 月度收支数据
+DROP TABLE IF EXISTS monthly_expense_detail;
+CREATE TABLE IF NOT EXISTS monthly_expense_detail (
+    id SERIAL PRIMARY KEY,
+    expense_month VARCHAR(7) NOT NULL,      -- 月份
+    label VARCHAR(100) NOT NULL,            -- 费用项目名称
+    amount DECIMAL(12,2) NOT NULL,          -- 金额
+    remark VARCHAR(500),                    -- 备注
+    is_fixed BOOLEAN DEFAULT FALSE,         -- 是否固定项
+    created_by INT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

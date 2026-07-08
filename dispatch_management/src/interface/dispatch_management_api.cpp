@@ -200,6 +200,69 @@ int main() {
         });
     }
 
+    auto queryYardSlotsFunc = DispatchControllerFactory::instance().create("queryYardSlots");
+    if (queryYardSlotsFunc) {
+        CROW_ROUTE(app, "/dispatch_mng/queryYardSlots").methods("GET"_method)
+        ([queryYardSlotsFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            return queryYardSlotsFunc(req, *connGuard);
+        });
+    }
+
+    auto addYardSlotFunc = DispatchControllerFactory::instance().create("addYardSlot");
+    if (addYardSlotFunc) {
+        CROW_ROUTE(app, "/dispatch_mng/addYardSlot").methods("POST"_method)
+        ([addYardSlotFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            return addYardSlotFunc(req, *connGuard);
+        });
+    }
+
+    auto deleteYardSlotFunc = DispatchControllerFactory::instance().create("deleteYardSlot");
+    if (deleteYardSlotFunc) {
+        CROW_ROUTE(app, "/dispatch_mng/deleteYardSlot").methods("POST"_method)
+        ([deleteYardSlotFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            return deleteYardSlotFunc(req, *connGuard);
+        });
+    }
+
+    auto updateYardSlotStatusFunc = DispatchControllerFactory::instance().create("updateYardSlotStatus");
+    if (updateYardSlotStatusFunc) {
+        CROW_ROUTE(app, "/dispatch_mng/updateYardSlotStatus").methods("POST"_method)
+        ([updateYardSlotStatusFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            return updateYardSlotStatusFunc(req, *connGuard);
+        });
+    }
+
+    auto updateYardSlotFunc = DispatchControllerFactory::instance().create("updateYardSlot");
+    if (updateYardSlotFunc) {
+        CROW_ROUTE(app, "/dispatch_mng/updateYardSlot").methods("POST"_method)
+        ([updateYardSlotFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            return updateYardSlotFunc(req, *connGuard);
+        });
+    }
+
+    auto queryYardLogsFunc = DispatchControllerFactory::instance().create("queryYardLogs");
+    if (queryYardLogsFunc) {
+        CROW_ROUTE(app, "/dispatch_mng/queryYardLogs").methods("GET"_method)
+        ([queryYardLogsFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            return queryYardLogsFunc(req, *connGuard);
+        });
+    }
+
+    auto getYardSlotDetailFunc = DispatchControllerFactory::instance().create("getYardSlotDetail");
+    if (getYardSlotDetailFunc) {
+        CROW_ROUTE(app, "/dispatch_mng/getYardSlotDetail").methods("GET"_method)
+        ([getYardSlotDetailFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            return getYardSlotDetailFunc(req, *connGuard);
+        });
+    }
+
     std::cout << "Dispatch Management Service running on port " << DISPATCH_MANAGE_PORT << std::endl;
     app.port(DISPATCH_MANAGE_PORT).multithreaded().run();
     

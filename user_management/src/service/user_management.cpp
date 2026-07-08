@@ -21,19 +21,90 @@ crow::response getRouterFunc(const crow::request& req, pqxx::connection& conn) {
             .with_issuer("user_management");
         verifier.verify(decoded);
         
-        // 2. 查询所有启用的菜单和按钮
+        const std::string username = decoded.get_subject();
+        
+        // 2. 查询当前用户的角色
         pqxx::work txn(conn);
-        pqxx::result res = txn.exec(
+        pqxx::result userRes = txn.exec_params(
+            "SELECT role FROM staff WHERE username = $1", username);
+        
+        if (userRes.empty()) {
+            result["code"] = 400;
+            result["msg"] = "User not found";
+            return crow::response(400, result);
+        }
+        
+        int role = userRes[0]["role"].as<int>();
+        
+        // 3. 根据角色确定可见的菜单名称列表
+        std::vector<std::string> allowedMenuNames;
+        
+        switch (role) {
+            case 0:  // 超级管理员 - 全部可见
+            case 1:  // 管理员 - 全部可见
+                // 不限制，查询所有
+                break;
+            case 2:  // 普通用户 - 订单管理，调度管理，集装箱管理，在途监控，异常管理
+                allowedMenuNames = {
+                    "订单管理", 
+                    "调度管理", 
+                    "集装箱管理", 
+                    "在途监控", 
+                    "异常管理"
+                };
+                break;
+            case 3:  // 财务 - 费用管理，财务管理
+                allowedMenuNames = {
+                    "费用管理", 
+                    "财务管理"
+                };
+                break;
+            case 4:  // 访客 - 仅主页
+                allowedMenuNames = {
+                    "主页"
+                };
+                break;
+            default:
+                // 默认只显示主页
+                allowedMenuNames = {
+                    "主页"
+                };
+                break;
+        }
+        
+        // 4. 查询菜单
+        std::string query = 
             "SELECT DISTINCT "
             "menu_id, parent_id, menu_name, path, component, query, "
             "route_name, visible, status, COALESCE(perms, '') as perms, "
             "menu_type, icon, order_num "
             "FROM menu "
-            "WHERE menu_type IN ('M', 'C') AND status = '0' "
-            "ORDER BY parent_id, order_num"
-        );
+            "WHERE menu_type IN ('M', 'C') AND status = '0' ";
         
-        // 3. 转换为Menu结构体列表
+        // 根据角色添加过滤条件
+        if (role != 0 && role != 1) {
+            // 构建允许的菜单名称条件
+            std::string menuNameCondition = "AND (";
+            for (size_t i = 0; i < allowedMenuNames.size(); i++) {
+                if (i > 0) menuNameCondition += " OR ";
+                menuNameCondition += "menu_name = '" + allowedMenuNames[i] + "'";
+            }
+            // 也包含子菜单（父菜单在允许列表中的）
+            menuNameCondition += " OR parent_id IN ("
+                "SELECT menu_id FROM menu WHERE ";
+            for (size_t i = 0; i < allowedMenuNames.size(); i++) {
+                if (i > 0) menuNameCondition += " OR ";
+                menuNameCondition += "menu_name = '" + allowedMenuNames[i] + "'";
+            }
+            menuNameCondition += "))";
+            query += menuNameCondition;
+        }
+        
+        query += " ORDER BY parent_id, order_num";
+        
+        pqxx::result res = txn.exec(query);
+        
+        // 5. 转换为Menu结构体列表
         std::vector<Menu> menus;
         for (const auto& row : res) {
             Menu menu;
@@ -54,10 +125,10 @@ crow::response getRouterFunc(const crow::request& req, pqxx::connection& conn) {
             menus.push_back(menu);
         }
         
-        // 4. 构建路由树
+        // 6. 构建路由树
         crow::json::wvalue routers = MenuRouterBuilder::buildMenus(menus);
         
-        // 5. 返回结果（修改字段名以匹配前端期望）
+        // 7. 返回结果
         result["code"] = 200;
         result["msg"] = "操作成功";
         result["data"] = std::move(routers);
@@ -141,7 +212,7 @@ crow::response forgetPasswordFunc(const crow::request& req, pqxx::connection& co
         
         // 验证用户名和手机号
         pqxx::result res = txn.exec_params(
-            "SELECT name FROM staff WHERE name = $1 AND phone_no = $2",
+            "SELECT name FROM staff WHERE username = $1 AND phone_no = $2",
             username, phoneNum
         );
         
@@ -192,7 +263,7 @@ crow::response resetPasswordFunc(const crow::request& req, pqxx::connection& con
         
         // 更新密码
         pqxx::result res = txn.exec_params(
-            "UPDATE staff SET password = $1 WHERE name = $2 RETURNING name",
+            "UPDATE staff SET password = $1 WHERE username = $2 RETURNING username",
             newPassword, username
         );
         
@@ -232,18 +303,16 @@ crow::response queryUserInfoFunc(const crow::request& req, pqxx::connection& con
         
         auto decoded = jwt::decode(token);
 
-        // 2. 验证 Token 的签名和有效期
         auto verifier = jwt::verify()
             .allow_algorithm(jwt::algorithm::hs256{"user_management"})
             .with_issuer("user_management");
 
-        verifier.verify(decoded); // 验证失败会抛出异常
+        verifier.verify(decoded);
 
-        // 3. ✅ 验证通过，从 "sub" 字段（Subject）中取出用户名
         const std::string username = decoded.get_subject();
         
         // ========== 动态构建查询条件 ==========
-        std::string baseQuery = "SELECT id, role, name, gender, age, birthday, position, email_address, phone_no FROM staff WHERE 1=1";
+        std::string baseQuery = "SELECT id, role, username, name, gender, age, birthday, position, email_address, phone_no FROM staff WHERE 1=1";
         std::vector<std::string> conditions;
         std::vector<std::string> params;
         int paramCounter = 1;
@@ -251,21 +320,18 @@ crow::response queryUserInfoFunc(const crow::request& req, pqxx::connection& con
         // 解析 GET 请求参数
         std::unordered_map<std::string, std::string> queryParams;
         
-        // 获取单个参数
         auto get_param = [&req](const std::string& key) -> std::string {
             char* value = req.url_params.get(key);
             return value ? std::string(value) : "";
         };
         
-        // 定义所有支持的参数（包括 username）
         std::vector<std::string> paramKeys = {
-            "id", "role", "name", "gender", "age", 
-            "birthday", "position", "email_address", "phone_no", "username",
+            "id", "role", "username", "name", "gender", "age", 
+            "birthday", "position", "email_address", "phone_no",
             "age_min", "age_max", "birthday_start", "birthday_end",
             "pageNum", "pageSize"
         };
         
-        // 获取参数值
         for (const auto& key : paramKeys) {
             std::string value = get_param(key);
             if (!value.empty()) {
@@ -273,21 +339,20 @@ crow::response queryUserInfoFunc(const crow::request& req, pqxx::connection& con
             }
         }
         
-        // 默认添加 username 条件（从 token 中获取）
         if (!username.empty()) {
             queryParams["username"] = username;
         }
         
-        // ========== 支持的所有筛选字段 ==========
         struct FilterField {
-            std::string paramName;   // 请求参数名
-            std::string dbField;     // 数据库字段名
-            bool isLike;             // 是否是模糊查询
+            std::string paramName;
+            std::string dbField;
+            bool isLike;
         };
         
         std::vector<FilterField> filters = {
             {"id", "id", false},
             {"role", "role", false},
+            {"username", "username", false},
             {"name", "name", true},
             {"gender", "gender", false},
             {"age", "age", false},
@@ -295,41 +360,33 @@ crow::response queryUserInfoFunc(const crow::request& req, pqxx::connection& con
             {"position", "position", true},
             {"email_address", "email_address", true},
             {"phone_no", "phone_no", true},
-            {"username", "username", false},
             {"age_min", "age", false},
             {"age_max", "age", false},
             {"birthday_start", "birthday", false},
             {"birthday_end", "birthday", false},
         };
         
-        // 构建动态条件
         for (const auto& filter : filters) {
             auto it = queryParams.find(filter.paramName);
             if (it != queryParams.end() && !it->second.empty()) {
                 std::string condition;
                 
                 if (filter.isLike) {
-                    // 模糊查询
                     condition = filter.dbField + " LIKE $" + std::to_string(paramCounter);
                     params.push_back("%" + it->second + "%");
                 } else if (filter.paramName == "age_min") {
-                    // 年龄范围查询 - 最小值
                     condition = filter.dbField + " >= $" + std::to_string(paramCounter);
                     params.push_back(it->second);
                 } else if (filter.paramName == "age_max") {
-                    // 年龄范围查询 - 最大值
                     condition = filter.dbField + " <= $" + std::to_string(paramCounter);
                     params.push_back(it->second);
                 } else if (filter.paramName == "birthday_start") {
-                    // 生日范围查询 - 起始
                     condition = filter.dbField + " >= $" + std::to_string(paramCounter);
                     params.push_back(it->second);
                 } else if (filter.paramName == "birthday_end") {
-                    // 生日范围查询 - 结束
                     condition = filter.dbField + " <= $" + std::to_string(paramCounter);
                     params.push_back(it->second);
                 } else {
-                    // 精确查询
                     condition = filter.dbField + " = $" + std::to_string(paramCounter);
                     params.push_back(it->second);
                 }
@@ -339,7 +396,6 @@ crow::response queryUserInfoFunc(const crow::request& req, pqxx::connection& con
             }
         }
         
-        // 添加分页支持
         int pageNum = 1;
         int pageSize = 20;
         
@@ -355,21 +411,17 @@ crow::response queryUserInfoFunc(const crow::request& req, pqxx::connection& con
         
         int offset = (pageNum - 1) * pageSize;
         
-        // 组装完整查询
         std::string finalQuery = baseQuery;
         for (const auto& cond : conditions) {
             finalQuery += " AND " + cond;
         }
         
-        // 添加排序
         finalQuery += " ORDER BY id DESC";
         
-        // 添加分页
         finalQuery += " LIMIT $" + std::to_string(paramCounter) + " OFFSET $" + std::to_string(paramCounter + 1);
         params.push_back(std::to_string(pageSize));
         params.push_back(std::to_string(offset));
         
-        // 执行查询
         pqxx::result res = txn.exec_params(finalQuery, pqxx::prepare::make_dynamic_params(params));
         
         if (res.empty()) { 
@@ -378,13 +430,11 @@ crow::response queryUserInfoFunc(const crow::request& req, pqxx::connection& con
             return crow::response(400, result);
         }
         
-        // 查询总数（不带分页）
         std::string countQuery = "SELECT COUNT(*) FROM staff WHERE 1=1";
         for (const auto& cond : conditions) {
             countQuery += " AND " + cond;
         }
         
-        // 准备总数查询的参数（去掉分页的两个参数）
         std::vector<std::string> countParams;
         for (size_t i = 0; i < params.size() - 2; i++) {
             countParams.push_back(params[i]);
@@ -399,13 +449,13 @@ crow::response queryUserInfoFunc(const crow::request& req, pqxx::connection& con
         
         int total = countRes[0][0].as<int>();
         
-        // 构建返回的JSON数组
         crow::json::wvalue::list staffList;
         
         for (const auto& row : res) {
             crow::json::wvalue staff;
             staff["id"] = row["id"].as<int>();
             staff["role"] = row["role"].is_null() ? -1 : row["role"].as<int>();
+            staff["username"] = row["username"].is_null() ? "" : row["username"].as<std::string>();
             staff["name"] = row["name"].is_null() ? "" : row["name"].as<std::string>();
             staff["gender"] = row["gender"].is_null() ? -1 : row["gender"].as<int>();
             staff["age"] = row["age"].is_null() ? -1 : row["age"].as<int>();
@@ -417,7 +467,6 @@ crow::response queryUserInfoFunc(const crow::request& req, pqxx::connection& con
             staffList.push_back(std::move(staff));
         }
         
-        // 设置返回结果
         result["retCode"] = 200;
         
         if (staffList.size() == 1) {
@@ -455,40 +504,34 @@ crow::response getUserListFunc(const crow::request& req, pqxx::connection& conn)
         
         auto decoded = jwt::decode(token);
 
-        // 2. 验证 Token 的签名和有效期
         auto verifier = jwt::verify()
             .allow_algorithm(jwt::algorithm::hs256{"user_management"})
             .with_issuer("user_management");
 
-        verifier.verify(decoded); // 验证失败会抛出异常
+        verifier.verify(decoded);
 
-        // 3. ✅ 验证通过，从 "sub" 字段（Subject）中取出用户名
         const std::string username = decoded.get_subject();
         
         // ========== 动态构建查询条件 ==========
-        std::string baseQuery = "SELECT id, role, name, gender, age, birthday, position, email_address, phone_no FROM staff WHERE 1=1";
+        std::string baseQuery = "SELECT id, role, username, name, gender, age, birthday, position, email_address, phone_no FROM staff WHERE 1=1";
         std::vector<std::string> conditions;
         std::vector<std::string> params;
         int paramCounter = 1;
         
-        // 解析 GET 请求参数
         std::unordered_map<std::string, std::string> queryParams;
         
-        // 获取单个参数
         auto get_param = [&req](const std::string& key) -> std::string {
             char* value = req.url_params.get(key);
             return value ? std::string(value) : "";
         };
         
-        // 定义所有支持的参数
         std::vector<std::string> paramKeys = {
-            "id", "role", "name", "gender", "age", 
+            "id", "role", "username", "name", "gender", "age", 
             "birthday", "position", "email_address", "phone_no",
             "age_min", "age_max", "birthday_start", "birthday_end",
             "pageNum", "pageSize"
         };
         
-        // 获取参数值
         for (const auto& key : paramKeys) {
             std::string value = get_param(key);
             if (!value.empty()) {
@@ -496,16 +539,16 @@ crow::response getUserListFunc(const crow::request& req, pqxx::connection& conn)
             }
         }
         
-        // ========== 支持的所有筛选字段 ==========
         struct FilterField {
-            std::string paramName;   // 请求参数名
-            std::string dbField;     // 数据库字段名
-            bool isLike;             // 是否是模糊查询
+            std::string paramName;
+            std::string dbField;
+            bool isLike;
         };
         
         std::vector<FilterField> filters = {
             {"id", "id", false},
             {"role", "role", false},
+            {"username", "username", false},
             {"name", "name", true},
             {"gender", "gender", false},
             {"age", "age", false},
@@ -519,34 +562,27 @@ crow::response getUserListFunc(const crow::request& req, pqxx::connection& conn)
             {"birthday_end", "birthday", false},
         };
         
-        // 构建动态条件
         for (const auto& filter : filters) {
             auto it = queryParams.find(filter.paramName);
             if (it != queryParams.end() && !it->second.empty()) {
                 std::string condition;
                 
                 if (filter.isLike) {
-                    // 模糊查询
                     condition = filter.dbField + " LIKE $" + std::to_string(paramCounter);
                     params.push_back("%" + it->second + "%");
                 } else if (filter.paramName == "age_min") {
-                    // 年龄范围查询 - 最小值
                     condition = filter.dbField + " >= $" + std::to_string(paramCounter);
                     params.push_back(it->second);
                 } else if (filter.paramName == "age_max") {
-                    // 年龄范围查询 - 最大值
                     condition = filter.dbField + " <= $" + std::to_string(paramCounter);
                     params.push_back(it->second);
                 } else if (filter.paramName == "birthday_start") {
-                    // 生日范围查询 - 起始
                     condition = filter.dbField + " >= $" + std::to_string(paramCounter);
                     params.push_back(it->second);
                 } else if (filter.paramName == "birthday_end") {
-                    // 生日范围查询 - 结束
                     condition = filter.dbField + " <= $" + std::to_string(paramCounter);
                     params.push_back(it->second);
                 } else {
-                    // 精确查询
                     condition = filter.dbField + " = $" + std::to_string(paramCounter);
                     params.push_back(it->second);
                 }
@@ -556,7 +592,6 @@ crow::response getUserListFunc(const crow::request& req, pqxx::connection& conn)
             }
         }
         
-        // 添加分页支持
         int pageNum = 1;
         int pageSize = 20;
         
@@ -572,30 +607,24 @@ crow::response getUserListFunc(const crow::request& req, pqxx::connection& conn)
         
         int offset = (pageNum - 1) * pageSize;
         
-        // 组装完整查询
         std::string finalQuery = baseQuery;
         for (const auto& cond : conditions) {
             finalQuery += " AND " + cond;
         }
         
-        // 添加排序
         finalQuery += " ORDER BY id DESC";
         
-        // 添加分页
         finalQuery += " LIMIT $" + std::to_string(paramCounter) + " OFFSET $" + std::to_string(paramCounter + 1);
         params.push_back(std::to_string(pageSize));
         params.push_back(std::to_string(offset));
         
-        // 执行查询
         pqxx::result res = txn.exec_params(finalQuery, pqxx::prepare::make_dynamic_params(params));
         
-        // 查询总数（不带分页）
         std::string countQuery = "SELECT COUNT(*) FROM staff WHERE 1=1";
         for (const auto& cond : conditions) {
             countQuery += " AND " + cond;
         }
         
-        // 准备总数查询的参数（去掉分页的两个参数）
         std::vector<std::string> countParams;
         for (size_t i = 0; i < params.size() - 2; i++) {
             countParams.push_back(params[i]);
@@ -610,13 +639,13 @@ crow::response getUserListFunc(const crow::request& req, pqxx::connection& conn)
         
         int total = countRes[0][0].as<int>();
         
-        // 构建返回的JSON数组
         crow::json::wvalue::list staffList; 
         
         for (const auto& row : res) {
             crow::json::wvalue staff;
             staff["id"] = row["id"].as<int>();
             staff["role"] = row["role"].is_null() ? -1 : row["role"].as<int>();
+            staff["username"] = row["username"].is_null() ? "" : row["username"].as<std::string>();
             staff["name"] = row["name"].is_null() ? "" : row["name"].as<std::string>();
             staff["gender"] = row["gender"].is_null() ? -1 : row["gender"].as<int>();
             staff["age"] = row["age"].is_null() ? -1 : row["age"].as<int>();
@@ -628,7 +657,6 @@ crow::response getUserListFunc(const crow::request& req, pqxx::connection& conn)
             staffList.push_back(std::move(staff));
         }
         
-        // 5. 设置返回结果
         result["retCode"] = 200;
         result["data"] = std::move(staffList);
         result["total"] = total;
@@ -670,18 +698,18 @@ crow::response addUserFunc(const crow::request& req, pqxx::connection& conn) {
             .with_issuer("user_management");
         verifier.verify(decoded);
 
-        // 检查必需字段
-        if (!body.has("name") || !body.has("nickName") || !body.has("password") || 
+        // ✅ 检查必需字段：username（用户名）和 name（用户名称）
+        if (!body.has("username") || !body.has("name") || !body.has("password") || 
             !body.has("phone_no") || !body.has("email") || !body.has("role")) {
              result["retCode"] = 400;
              result["errorMsg"] = "Missing required fields";
              return crow::response(400, result);
         }
 
-        std::string username = body["name"].s();
-        std::string name = body["nickName"].s();
+        // ✅ username = 用户名（登录用），name = 用户名称（显示用）
+        std::string username = body["username"].s();
+        std::string name = body["name"].s();
         
-        // ✅ 修复：分开处理 position 字段
         std::string position = "";
         if (body.has("position")) {
             position = body["position"].s();
@@ -698,19 +726,16 @@ crow::response addUserFunc(const crow::request& req, pqxx::connection& conn) {
             role = std::stoi(body["role"].s());
         }
 
-        // 处理 age 字段
         int age = -1;
         if (body.has("age") && body["age"].t() == crow::json::type::Number) {
             age = body["age"].i();
         }
         
-        // 处理 birthday 字段
         std::string birthday = "";
         if (body.has("birthday") && body["birthday"].t() == crow::json::type::String) {
             birthday = body["birthday"].s();
         }
 
-        // 插入数据
         pqxx::result res = txn.exec_params(
             "INSERT INTO staff (role, username, name, position, email_address, phone_no, password, age, birthday) "
             "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id",
@@ -772,7 +797,6 @@ crow::response updateUserFunc(const crow::request& req, pqxx::connection& conn) 
             .with_issuer("user_management");
         verifier.verify(decoded);
 
-        // 检查必需字段（id 必须存在）
         if (!body.has("id")) {
             result["retCode"] = 400;
             result["errorMsg"] = "Missing required field: id";
@@ -781,15 +805,15 @@ crow::response updateUserFunc(const crow::request& req, pqxx::connection& conn) 
 
         int userId = body["id"].i();
         
-        // 获取可选字段
+        // ✅ 字段映射：username 是用户名，name 是用户名称
         std::string username = "";
-        if (body.has("name")) {
-            username = body["name"].s();
+        if (body.has("username")) {
+            username = body["username"].s();
         }
         
         std::string name = "";
-        if (body.has("nickName")) {
-            name = body["nickName"].s();
+        if (body.has("name")) {
+            name = body["name"].s();
         }
         
         std::string position = "";
@@ -807,7 +831,6 @@ crow::response updateUserFunc(const crow::request& req, pqxx::connection& conn) 
             phone_no = body["phone_no"].s();
         }
         
-        // 处理 role 字段
         int role = -1;
         if (body.has("role")) {
             if (body["role"].t() == crow::json::type::Number) {
@@ -817,30 +840,27 @@ crow::response updateUserFunc(const crow::request& req, pqxx::connection& conn) 
             }
         }
         
-        // 处理 age 字段
         int age = -1;
         if (body.has("age") && body["age"].t() == crow::json::type::Number) {
             age = body["age"].i();
         }
         
-        // 处理 birthday 字段
         std::string birthday = "";
         if (body.has("birthday") && body["birthday"].t() == crow::json::type::String) {
             birthday = body["birthday"].s();
         }
         
-        // 处理 password 字段（可选，如果提供则更新）
         std::string password = "";
         if (body.has("password")) {
             password = body["password"].s();
         }
         
-        // 动态构建 UPDATE 语句
         std::string updateSql = "UPDATE staff SET ";
         std::vector<std::string> setClauses;
         std::vector<std::string> params;
         int paramCounter = 1;
         
+        // ✅ username 在修改时不可变更，但如果有传则更新（前端已禁用）
         if (!username.empty()) {
             setClauses.push_back("username = $" + std::to_string(paramCounter++));
             params.push_back(username);
@@ -884,7 +904,6 @@ crow::response updateUserFunc(const crow::request& req, pqxx::connection& conn) 
             return crow::response(400, result);
         }
         
-        // 组装 SQL
         for (size_t i = 0; i < setClauses.size(); i++) {
             if (i > 0) updateSql += ", ";
             updateSql += setClauses[i];
@@ -892,7 +911,6 @@ crow::response updateUserFunc(const crow::request& req, pqxx::connection& conn) 
         updateSql += " WHERE id = $" + std::to_string(paramCounter);
         params.push_back(std::to_string(userId));
         
-        // 执行更新
         pqxx::result res = txn.exec_params(updateSql, pqxx::prepare::make_dynamic_params(params));
         
         if (res.affected_rows() == 0) {
@@ -934,25 +952,21 @@ crow::response deleteUserFunc(const crow::request& req, pqxx::connection& conn) 
     }
 
     try {
-        // JWT 验证
         auto decoded = jwt::decode(token);
         auto verifier = jwt::verify()
             .allow_algorithm(jwt::algorithm::hs256{"user_management"})
             .with_issuer("user_management");
         verifier.verify(decoded);
 
-        // 检查是否有 ids 字段
         if (!body.has("ids")) {
             result["retCode"] = 400;
             result["errorMsg"] = "Missing required field: ids";
             return crow::response(400, result);
         }
 
-        // 获取 ID 列表
         std::vector<int> ids;
         auto& ids_array = body["ids"];
         
-        // 提取所有 ID
         for (const auto& id_val : ids_array) {
             ids.push_back(id_val.i());
         }
@@ -986,7 +1000,6 @@ crow::response deleteUserFunc(const crow::request& req, pqxx::connection& conn) 
         return crow::response(200, result);
         
     } catch (const std::exception& e) {
-        // ✅ 打印具体错误，方便调试
         std::cerr << "Delete User Error: " << e.what() << std::endl;
         
         result["retCode"] = 400;

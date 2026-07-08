@@ -169,6 +169,25 @@ services:
     - postgres
     restart: unless-stopped
 
+  finance-management:
+    image: quay.io/centos/centos:stream9
+    container_name: finance-management-service
+    working_dir: /app
+    command: sh -c "dnf install -y postgresql-libs && ./finance_management"
+    ports:
+    - "8086:8086"
+    volumes:
+    - /home/VehicleManagementSystem/finance_management/output/finance_management:/app/finance_management
+    environment:
+    - DB_HOST=postgres
+    - DB_PORT=5432
+    - DB_USER=admin
+    - DB_PASSWORD=admin123
+    - DB_NAME=vehicleManageDB
+    depends_on:
+    - postgres
+    restart: unless-stopped
+
   auth-service:
     image: python:3.9-slim
     container_name: auth_service
