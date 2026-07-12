@@ -406,7 +406,6 @@ crow::response queryDriverFunc(const crow::request& req, pqxx::connection& conn)
         const std::string username = decoded.get_subject();
         
         // ========== 动态构建查询条件 ==========
-        // ✅ 移除 license_issue_date, license_issue_state, class_of_vehicle
         std::string baseQuery = "SELECT id, client_id, name, phone_no, email, driver_license, "
                                 "license_type, license_expire_date, status, "
                                 "msic_card_no, msic_card_expire_date, dg_license_no, dg_license_expire_date "
@@ -646,19 +645,16 @@ crow::response addVehicleFunc(const crow::request& req, pqxx::connection& conn) 
             kilometres = body["kilometres"].i();
         }
         
-        // ✅ 修改：insurance_expire_date 改为 rego_expire_date
         std::string rego_expire_date = "";
         if (body.has("rego_expire_date")) {
             rego_expire_date = body["rego_expire_date"].s();
         }
         
-        // ✅ 新增：tag_number
         std::string tag_number = "";
         if (body.has("tag_number")) {
             tag_number = body["tag_number"].s();
         }
         
-        // ✅ 新增：fuel_card_number
         std::string fuel_card_number = "";
         if (body.has("fuel_card_number")) {
             fuel_card_number = body["fuel_card_number"].s();
@@ -759,16 +755,15 @@ crow::response updateVehicleFunc(const crow::request& req, pqxx::connection& con
             bool isString;
         };
 
-        // ✅ 更新字段列表
         std::vector<UpdateField> updateableFields = {
             {"license_plate", "license_plate", true},
             {"type", "type", true},
             {"status", "status", false},
             {"gps_id", "gps_id", true},
             {"kilometres", "kilometres", false},
-            {"rego_expire_date", "rego_expire_date", true},      // 修改
-            {"tag_number", "tag_number", true},                  // 新增
-            {"fuel_card_number", "fuel_card_number", true},      // 新增
+            {"rego_expire_date", "rego_expire_date", true},
+            {"tag_number", "tag_number", true},
+            {"fuel_card_number", "fuel_card_number", true},
             {"driver_id", "driver_id", false}
         };
 
@@ -921,10 +916,12 @@ crow::response queryVehicleFunc(const crow::request& req, pqxx::connection& conn
 
         const std::string username = decoded.get_subject();
         
-        // ✅ 更新 SELECT 字段
-        std::string baseQuery = "SELECT id, license_plate, type, status, gps_id, kilometres, "
-                                "rego_expire_date, tag_number, fuel_card_number, driver_id "
-                                "FROM vehicle WHERE 1=1";
+        std::string baseQuery = "SELECT v.id, v.license_plate, v.type, v.status, v.gps_id, v.kilometres, "
+                                "v.rego_expire_date, v.tag_number, v.fuel_card_number, v.driver_id, "
+                                "d.name AS driver_name "
+                                "FROM vehicle v "
+                                "LEFT JOIN driver d ON v.driver_id = d.id "
+                                "WHERE 1=1";
         std::vector<std::string> conditions;
         std::vector<std::string> params;
         int paramCounter = 1;
@@ -936,7 +933,6 @@ crow::response queryVehicleFunc(const crow::request& req, pqxx::connection& conn
             return value ? std::string(value) : "";
         };
         
-        // ✅ 更新支持的参数
         std::vector<std::string> paramKeys = {
             "id", "license_plate", "type", "status", "gps_id",
             "kilometres_min", "kilometres_max",
@@ -955,45 +951,46 @@ crow::response queryVehicleFunc(const crow::request& req, pqxx::connection& conn
         struct FilterField {
             std::string paramName;
             std::string dbField;
+            std::string tablePrefix;
             bool isLike;
         };
         
-        // ✅ 更新筛选字段
         std::vector<FilterField> filters = {
-            {"id", "id", false},
-            {"license_plate", "license_plate", true},
-            {"type", "type", false},
-            {"status", "status", false},
-            {"gps_id", "gps_id", false},
-            {"kilometres_min", "kilometres", false},
-            {"kilometres_max", "kilometres", false},
-            {"rego_expire_date_start", "rego_expire_date", false},
-            {"rego_expire_date_end", "rego_expire_date", false},
-            {"driver_id", "driver_id", false}
+            {"id", "id", "v.", false},
+            {"license_plate", "license_plate", "v.", true},
+            {"type", "type", "v.", false},
+            {"status", "status", "v.", false},
+            {"gps_id", "gps_id", "v.", false},
+            {"kilometres_min", "kilometres", "v.", false},
+            {"kilometres_max", "kilometres", "v.", false},
+            {"rego_expire_date_start", "rego_expire_date", "v.", false},
+            {"rego_expire_date_end", "rego_expire_date", "v.", false},
+            {"driver_id", "driver_id", "v.", false}
         };
         
         for (const auto& filter : filters) {
             auto it = queryParams.find(filter.paramName);
             if (it != queryParams.end() && !it->second.empty()) {
                 std::string condition;
+                std::string fullDbField = filter.tablePrefix + filter.dbField;
                 
                 if (filter.isLike) {
-                    condition = filter.dbField + " LIKE $" + std::to_string(paramCounter);
+                    condition = fullDbField + " LIKE $" + std::to_string(paramCounter);
                     params.push_back("%" + it->second + "%");
                 } else if (filter.paramName == "kilometres_min") {
-                    condition = filter.dbField + " >= $" + std::to_string(paramCounter);
+                    condition = fullDbField + " >= $" + std::to_string(paramCounter);
                     params.push_back(it->second);
                 } else if (filter.paramName == "kilometres_max") {
-                    condition = filter.dbField + " <= $" + std::to_string(paramCounter);
+                    condition = fullDbField + " <= $" + std::to_string(paramCounter);
                     params.push_back(it->second);
                 } else if (filter.paramName.find("_start") != std::string::npos) {
-                    condition = filter.dbField + " >= $" + std::to_string(paramCounter);
+                    condition = fullDbField + " >= $" + std::to_string(paramCounter);
                     params.push_back(it->second);
                 } else if (filter.paramName.find("_end") != std::string::npos) {
-                    condition = filter.dbField + " <= $" + std::to_string(paramCounter);
+                    condition = fullDbField + " <= $" + std::to_string(paramCounter);
                     params.push_back(it->second);
                 } else {
-                    condition = filter.dbField + " = $" + std::to_string(paramCounter);
+                    condition = fullDbField + " = $" + std::to_string(paramCounter);
                     params.push_back(it->second);
                 }
                 
@@ -1022,14 +1019,14 @@ crow::response queryVehicleFunc(const crow::request& req, pqxx::connection& conn
             finalQuery += " AND " + cond;
         }
         
-        finalQuery += " ORDER BY id DESC";
+        finalQuery += " ORDER BY v.id DESC";
         finalQuery += " LIMIT $" + std::to_string(paramCounter) + " OFFSET $" + std::to_string(paramCounter + 1);
         params.push_back(std::to_string(pageSize));
         params.push_back(std::to_string(offset));
         
         pqxx::result res = txn.exec_params(finalQuery, pqxx::prepare::make_dynamic_params(params));
         
-        std::string countQuery = "SELECT COUNT(*) FROM vehicle WHERE 1=1";
+        std::string countQuery = "SELECT COUNT(*) FROM vehicle v WHERE 1=1";
         for (const auto& cond : conditions) {
             countQuery += " AND " + cond;
         }
@@ -1058,11 +1055,11 @@ crow::response queryVehicleFunc(const crow::request& req, pqxx::connection& conn
             vehicle["status"] = row["status"].is_null() ? -1 : row["status"].as<int>();
             vehicle["gps_id"] = row["gps_id"].is_null() ? "" : row["gps_id"].as<std::string>();
             vehicle["kilometres"] = row["kilometres"].is_null() ? -1 : row["kilometres"].as<int>();
-            // ✅ 更新返回字段
             vehicle["rego_expire_date"] = row["rego_expire_date"].is_null() ? "" : row["rego_expire_date"].as<std::string>();
             vehicle["tag_number"] = row["tag_number"].is_null() ? "" : row["tag_number"].as<std::string>();
             vehicle["fuel_card_number"] = row["fuel_card_number"].is_null() ? "" : row["fuel_card_number"].as<std::string>();
             vehicle["driver_id"] = row["driver_id"].is_null() ? 0 : row["driver_id"].as<int>();
+            vehicle["driver_name"] = row["driver_name"].is_null() ? "" : row["driver_name"].as<std::string>();
             vehicleList.push_back(std::move(vehicle));
         }
         
@@ -1262,7 +1259,6 @@ crow::response queryScheduleTaskFunc(const crow::request& req, pqxx::connection&
             .with_issuer("user_management");
         verifier.verify(decoded);
 
-        // ✅ 修改：移除 container_no，将 location 改为 start_point，新增 end_point
         std::string baseQuery = "SELECT id, vehicle_id, task_date, task_type, "
                                 "start_point, end_point, task_time, customer, description, status, sort_order, "
                                 "created_by, created_at, updated_by, updated_at "
@@ -1276,7 +1272,6 @@ crow::response queryScheduleTaskFunc(const crow::request& req, pqxx::connection&
             return value ? std::string(value) : "";
         };
         
-        // ✅ 修改：移除 container_no，新增 start_point, end_point 筛选
         std::vector<std::string> paramKeys = {
             "id", "vehicle_id", "task_date", "task_type", "status", 
             "start_point", "end_point", "customer"
@@ -1296,7 +1291,6 @@ crow::response queryScheduleTaskFunc(const crow::request& req, pqxx::connection&
             bool isLike;
         };
         
-        // ✅ 修改：更新筛选字段
         std::vector<FilterField> filters = {
             {"id", "id", false},
             {"vehicle_id", "vehicle_id", false},
@@ -1371,9 +1365,7 @@ crow::response queryScheduleTaskFunc(const crow::request& req, pqxx::connection&
             task["vehicle_id"] = row["vehicle_id"].as<int>();
             task["task_date"] = row["task_date"].is_null() ? "" : row["task_date"].as<std::string>();
             task["task_type"] = row["task_type"].is_null() ? "" : row["task_type"].as<std::string>();
-            // ✅ 修改：start_point 替代 location
             task["start_point"] = row["start_point"].is_null() ? "" : row["start_point"].as<std::string>();
-            // ✅ 新增：end_point
             task["end_point"] = row["end_point"].is_null() ? "" : row["end_point"].as<std::string>();
             task["task_time"] = row["task_time"].is_null() ? "" : row["task_time"].as<std::string>();
             task["customer"] = row["customer"].is_null() ? "" : row["customer"].as<std::string>();
@@ -1439,7 +1431,6 @@ crow::response addScheduleTaskFunc(const crow::request& req, pqxx::connection& c
         }
         int userId = staffRes[0]["id"].as<int>();
 
-        // ✅ 修改：移除 container_no，新增 start_point, end_point
         if (!body.has("vehicle_id") || !body.has("task_date") || !body.has("task_type")) {
             result["retCode"] = 400;
             result["errorMsg"] = "Missing required fields: vehicle_id, task_date, task_type";
@@ -1450,7 +1441,6 @@ crow::response addScheduleTaskFunc(const crow::request& req, pqxx::connection& c
         std::string task_date = body["task_date"].s();
         std::string task_type = body["task_type"].s();
         
-        // ✅ 新增：start_point, end_point
         std::string start_point = "";
         if (body.has("start_point")) {
             start_point = body["start_point"].s();
@@ -1486,7 +1476,6 @@ crow::response addScheduleTaskFunc(const crow::request& req, pqxx::connection& c
             sort_order = body["sort_order"].i();
         }
 
-        // ✅ 修改：更新 INSERT 语句
         pqxx::result res = txn.exec_params(
             "INSERT INTO schedule_task ("
             "vehicle_id, task_date, task_type, start_point, end_point, task_time, "
@@ -1603,7 +1592,6 @@ crow::response updateScheduleTaskFunc(const crow::request& req, pqxx::connection
             }
         };
 
-        // ✅ 修改：移除 container_no，新增 start_point, end_point
         addIntField("vehicle_id", "vehicle_id");
         addStringField("task_date", "task_date");
         addStringField("task_type", "task_type");
@@ -1749,34 +1737,77 @@ crow::response queryYardSlotsFunc(const crow::request& req, pqxx::connection& co
             .with_issuer("user_management");
         verifier.verify(decoded);
 
-        // 查询所有未删除的位置
-        pqxx::result res = txn.exec(
+        // ========== 查询 Container Area ==========
+        pqxx::result containerRes = txn.exec(
             "SELECT id, slot_name, area_type, status, container_no, "
-            "order_id, driver_name, in_time, remark, created_at, updated_at "
-            "FROM yard_slot WHERE deleted_at IS NULL "
-            "ORDER BY area_type, id"
+            "order_id, in_time, remark, created_at, updated_at "
+            "FROM yard_slot "
+            "WHERE area_type = 'container' AND deleted_at IS NULL "
+            "ORDER BY id"
         );
 
         crow::json::wvalue::list containerSlots;
-        crow::json::wvalue::list parkingSlots;
-
-        for (const auto& row : res) {
+        for (const auto& row : containerRes) {
             crow::json::wvalue slot;
             slot["id"] = row["id"].as<int>();
-            slot["name"] = row["slot_name"].is_null() ? "" : row["slot_name"].as<std::string>();
+            slot["name"] = row["slot_name"].as<std::string>();
+            slot["areaType"] = row["area_type"].as<std::string>();
             slot["status"] = row["status"].is_null() ? "empty" : row["status"].as<std::string>();
             slot["containerNo"] = row["container_no"].is_null() ? "" : row["container_no"].as<std::string>();
             slot["orderId"] = row["order_id"].is_null() ? "" : row["order_id"].as<std::string>();
-            slot["driverName"] = row["driver_name"].is_null() ? "" : row["driver_name"].as<std::string>();
+            slot["driverName"] = "";
             slot["inTime"] = row["in_time"].is_null() ? "" : row["in_time"].as<std::string>();
             slot["remark"] = row["remark"].is_null() ? "" : row["remark"].as<std::string>();
+            slot["vehicleId"] = 0;
+            slot["vehicleNo"] = "";
+            containerSlots.push_back(std::move(slot));
+        }
+
+        // ========== 查询 Parking Area（关联车辆和货柜信息） ==========
+        // ✅ 移除 ys.vehicle_no（表中已不存在），改用 v.license_plate
+        pqxx::result parkingRes = txn.exec(
+            "SELECT DISTINCT ON (ys.id) "
+            "  ys.id, ys.slot_name, ys.area_type, ys.status, ys.remark, "
+            "  ys.vehicle_id, ys.in_time, "
+            "  v.license_plate, v.type AS vehicle_type, v.driver_id, "
+            "  d.name AS driver_name, "
+            "  t.container_id, "
+            "  c.container_no "
+            "FROM yard_slot ys "
+            "LEFT JOIN vehicle v ON ys.vehicle_id = v.id "
+            "LEFT JOIN driver d ON v.driver_id = d.id "
+            "LEFT JOIN task t ON t.vehicle_id = v.id AND t.task_status = 2 "
+            "LEFT JOIN container c ON t.container_id = c.id AND c.deleted_at IS NULL "
+            "WHERE ys.area_type = 'parking' AND ys.deleted_at IS NULL "
+            "ORDER BY ys.id, t.id DESC"
+        );
+
+        crow::json::wvalue::list parkingSlots;
+        for (const auto& row : parkingRes) {
+            crow::json::wvalue slot;
+            slot["id"] = row["id"].as<int>();
+            slot["name"] = row["slot_name"].as<std::string>();
+            slot["areaType"] = row["area_type"].as<std::string>();
+            slot["status"] = row["status"].is_null() ? "empty" : row["status"].as<std::string>();
+            slot["remark"] = row["remark"].is_null() ? "" : row["remark"].as<std::string>();
             
-            std::string areaType = row["area_type"].as<std::string>();
-            if (areaType == "container") {
-                containerSlots.push_back(std::move(slot));
-            } else {
-                parkingSlots.push_back(std::move(slot));
-            }
+            // 车辆信息
+            int vehicleId = row["vehicle_id"].is_null() ? 0 : row["vehicle_id"].as<int>();
+            slot["vehicleId"] = vehicleId;
+            
+            // ✅ 车牌号从 vehicle 表获取
+            std::string vehicleNo = row["license_plate"].is_null() ? "" : row["license_plate"].as<std::string>();
+            slot["vehicleNo"] = vehicleNo;
+            
+            slot["vehicleType"] = row["vehicle_type"].is_null() ? "" : row["vehicle_type"].as<std::string>();
+            slot["driverName"] = row["driver_name"].is_null() ? "" : row["driver_name"].as<std::string>();
+            slot["driverId"] = row["driver_id"].is_null() ? 0 : row["driver_id"].as<int>();
+            slot["containerNo"] = row["container_no"].is_null() ? "" : row["container_no"].as<std::string>();
+            slot["containerId"] = row["container_id"].is_null() ? 0 : row["container_id"].as<int>();
+            slot["inTime"] = row["in_time"].is_null() ? "" : row["in_time"].as<std::string>();
+            slot["orderId"] = "";
+            
+            parkingSlots.push_back(std::move(slot));
         }
 
         result["retCode"] = 200;
@@ -1827,7 +1858,6 @@ crow::response addYardSlotFunc(const crow::request& req, pqxx::connection& conn)
             return crow::response(400, result);
         }
 
-        // 必填字段校验
         if (!body.has("name") || !body.has("area")) {
             result["retCode"] = 400;
             result["errorMsg"] = "name and area are required";
@@ -1837,14 +1867,12 @@ crow::response addYardSlotFunc(const crow::request& req, pqxx::connection& conn)
         std::string slotName = body["name"].s();
         std::string areaType = body["area"].s();
         
-        // 验证区域类型
         if (areaType != "container" && areaType != "parking") {
             result["retCode"] = 400;
             result["errorMsg"] = "area must be 'container' or 'parking'";
             return crow::response(400, result);
         }
 
-        // 检查同一区域内名称是否已存在
         pqxx::result checkRes = txn.exec_params(
             "SELECT id FROM yard_slot WHERE slot_name = $1 AND area_type = $2 AND deleted_at IS NULL",
             slotName.c_str(), areaType.c_str()
@@ -1885,7 +1913,6 @@ crow::response addYardSlotFunc(const crow::request& req, pqxx::connection& conn)
 
         int slotId = res[0]["id"].as<int>();
 
-        // 记录日志
         addYardLog(txn, slotId, slotName, areaType, "add", "", "", "", remark, userId, userName);
 
         result["retCode"] = 200;
@@ -1932,7 +1959,6 @@ crow::response deleteYardSlotFunc(const crow::request& req, pqxx::connection& co
             .with_issuer("user_management");
         verifier.verify(decoded);
 
-        // 检查管理员权限
         std::string role = decoded.get_payload_claim("role").as_string();
         if (role != "admin") {
             result["retCode"] = 403;
@@ -1956,9 +1982,8 @@ crow::response deleteYardSlotFunc(const crow::request& req, pqxx::connection& co
 
         int slotId = body["id"].i();
 
-        // 获取位置信息（用于日志）
         pqxx::result slotRes = txn.exec_params(
-            "SELECT slot_name, area_type FROM yard_slot WHERE id = $1 AND deleted_at IS NULL",
+            "SELECT slot_name, area_type, status, vehicle_id FROM yard_slot WHERE id = $1 AND deleted_at IS NULL",
             slotId
         );
         if (slotRes.empty()) {
@@ -1969,14 +1994,20 @@ crow::response deleteYardSlotFunc(const crow::request& req, pqxx::connection& co
 
         std::string slotName = slotRes[0]["slot_name"].as<std::string>();
         std::string areaType = slotRes[0]["area_type"].as<std::string>();
+        std::string status = slotRes[0]["status"].as<std::string>();
+        int vehicleId = slotRes[0]["vehicle_id"].is_null() ? 0 : slotRes[0]["vehicle_id"].as<int>();
 
-        // 软删除
+        if (areaType == "parking" && status == "occupied" && vehicleId > 0) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "Cannot delete parking slot with vehicle parked in it";
+            return crow::response(400, result);
+        }
+
         txn.exec_params(
             "UPDATE yard_slot SET deleted_at = CURRENT_TIMESTAMP, deleted_by = $1 WHERE id = $2",
             userId, slotId
         );
 
-        // 记录日志
         addYardLog(txn, slotId, slotName, areaType, "delete", "", "", "", "", userId, userName);
 
         result["retCode"] = 200;
@@ -2037,9 +2068,9 @@ crow::response updateYardSlotStatusFunc(const crow::request& req, pqxx::connecti
         int slotId = body["id"].i();
         std::string action = body["action"].s();
 
-        // 获取位置信息
+        // ✅ 移除 vehicle_no, driver_name
         pqxx::result slotRes = txn.exec_params(
-            "SELECT slot_name, area_type, status, container_no, order_id, driver_name, in_time "
+            "SELECT slot_name, area_type, status, container_no, vehicle_id, order_id, in_time "
             "FROM yard_slot WHERE id = $1 AND deleted_at IS NULL",
             slotId
         );
@@ -2057,12 +2088,16 @@ crow::response updateYardSlotStatusFunc(const crow::request& req, pqxx::connecti
         std::string newStatus;
         std::string containerNo = "";
         std::string orderId = "";
-        std::string driverName = "";
         std::string remark = "";
         std::string logAction = action;
 
         if (action == "in") {
-            // 进场：需要货柜号，状态变为 occupied
+            if (areaType != "container") {
+                result["retCode"] = 400;
+                result["errorMsg"] = "'in' action is only for Container Area";
+                return crow::response(400, result);
+            }
+            
             if (!body.has("containerNo")) {
                 result["retCode"] = 400;
                 result["errorMsg"] = "containerNo is required for 'in' action";
@@ -2077,24 +2112,27 @@ crow::response updateYardSlotStatusFunc(const crow::request& req, pqxx::connecti
             newStatus = "occupied";
             containerNo = body["containerNo"].s();
             if (body.has("orderId")) orderId = body["orderId"].s();
-            if (body.has("driverName")) driverName = body["driverName"].s();
             if (body.has("remark")) remark = body["remark"].s();
             
             txn.exec_params(
                 "UPDATE yard_slot SET "
-                "status = $1, container_no = $2, order_id = $3, driver_name = $4, "
-                "in_time = CURRENT_TIMESTAMP, remark = $5, updated_at = CURRENT_TIMESTAMP "
-                "WHERE id = $6",
+                "status = $1, container_no = $2, order_id = $3, "
+                "in_time = CURRENT_TIMESTAMP, remark = $4, updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = $5",
                 newStatus.c_str(),
                 containerNo.c_str(),
                 orderId.empty() ? nullptr : orderId.c_str(),
-                driverName.empty() ? nullptr : driverName.c_str(),
                 remark.empty() ? nullptr : remark.c_str(),
                 slotId
             );
             
         } else if (action == "out") {
-            // 离场：状态变为 empty，清空所有关联信息
+            if (areaType != "container") {
+                result["retCode"] = 400;
+                result["errorMsg"] = "'out' action is only for Container Area";
+                return crow::response(400, result);
+            }
+            
             if (currentStatus != "occupied") {
                 result["retCode"] = 400;
                 result["errorMsg"] = "Slot is not occupied, cannot mark as out";
@@ -2108,7 +2146,7 @@ crow::response updateYardSlotStatusFunc(const crow::request& req, pqxx::connecti
             txn.exec_params(
                 "UPDATE yard_slot SET "
                 "status = $1, container_no = NULL, order_id = NULL, "
-                "driver_name = NULL, in_time = NULL, remark = $2, updated_at = CURRENT_TIMESTAMP "
+                "in_time = NULL, remark = $2, updated_at = CURRENT_TIMESTAMP "
                 "WHERE id = $3",
                 newStatus.c_str(),
                 remark.empty() ? nullptr : remark.c_str(),
@@ -2116,7 +2154,6 @@ crow::response updateYardSlotStatusFunc(const crow::request& req, pqxx::connecti
             );
             
         } else if (action == "reserve") {
-            // 预留：状态变为 reserved
             if (currentStatus != "empty") {
                 result["retCode"] = 400;
                 result["errorMsg"] = "Slot is not empty, cannot reserve";
@@ -2136,7 +2173,6 @@ crow::response updateYardSlotStatusFunc(const crow::request& req, pqxx::connecti
             );
             
         } else if (action == "cancel_reserve") {
-            // 取消预留：状态变为 empty
             if (currentStatus != "reserved") {
                 result["retCode"] = 400;
                 result["errorMsg"] = "Slot is not reserved, cannot cancel reserve";
@@ -2161,10 +2197,8 @@ crow::response updateYardSlotStatusFunc(const crow::request& req, pqxx::connecti
             return crow::response(400, result);
         }
 
-        // 记录日志
-        std::string logRemark = remark;
         addYardLog(txn, slotId, slotName, areaType, logAction, 
-                   containerNo, orderId, driverName, logRemark, userId, userName);
+                   containerNo, orderId, "", remark, userId, userName);
 
         result["retCode"] = 200;
         result["msg"] = "Status updated successfully";
@@ -2252,9 +2286,9 @@ crow::response updateYardSlotFunc(const crow::request& req, pqxx::connection& co
             }
         };
 
+        // Container Area 编辑字段（移除 driver_name）
         addStringField("container_no", "containerNo");
         addStringField("order_id", "orderId");
-        addStringField("driver_name", "driverName");
         addStringField("remark", "remark");
 
         // 如果更新了货柜号且状态是 empty，自动变为 occupied
@@ -2298,12 +2332,10 @@ crow::response updateYardSlotFunc(const crow::request& req, pqxx::connection& co
 
         txn.exec_params(updateSql, pqxx::prepare::make_dynamic_params(params));
 
-        // ========== 记录日志（修复点） ==========
-        // 先声明空字符串，再逐个赋值，避免三元运算符类型不匹配
+        // 记录日志
         std::string remark = "";
         std::string containerNo = "";
         std::string orderId = "";
-        std::string driverName = "";
         
         if (body.has("remark")) {
             remark = body["remark"].s();
@@ -2314,12 +2346,9 @@ crow::response updateYardSlotFunc(const crow::request& req, pqxx::connection& co
         if (body.has("orderId")) {
             orderId = body["orderId"].s();
         }
-        if (body.has("driverName")) {
-            driverName = body["driverName"].s();
-        }
         
         addYardLog(txn, slotId, slotName, areaType, "edit", 
-                   containerNo, orderId, driverName, remark, userId, userName);
+                   containerNo, orderId, "", remark, userId, userName);
 
         result["retCode"] = 200;
         result["msg"] = "Slot updated successfully";
@@ -2355,7 +2384,6 @@ crow::response queryYardLogsFunc(const crow::request& req, pqxx::connection& con
             .with_issuer("user_management");
         verifier.verify(decoded);
 
-        // 解析分页参数
         int pageNum = 1;
         int pageSize = 20;
         auto get_param = [&req](const std::string& key) -> std::string {
@@ -2370,7 +2398,6 @@ crow::response queryYardLogsFunc(const crow::request& req, pqxx::connection& con
         
         int offset = (pageNum - 1) * pageSize;
 
-        // 查询日志
         pqxx::result res = txn.exec_params(
             "SELECT id, slot_id, slot_name, area_type, action_type, "
             "container_no, order_id, driver_name, remark, operator_name, created_at "
@@ -2378,7 +2405,6 @@ crow::response queryYardLogsFunc(const crow::request& req, pqxx::connection& con
             pageSize, offset
         );
 
-        // 查询总数
         pqxx::result countRes = txn.exec("SELECT COUNT(*) FROM yard_log");
         int total = countRes[0][0].as<int>();
 
@@ -2434,7 +2460,6 @@ crow::response getYardSlotDetailFunc(const crow::request& req, pqxx::connection&
             .with_issuer("user_management");
         verifier.verify(decoded);
 
-        // 解析ID参数
         auto get_param = [&req](const std::string& key) -> std::string {
             char* value = req.url_params.get(key);
             return value ? std::string(value) : "";
@@ -2449,28 +2474,38 @@ crow::response getYardSlotDetailFunc(const crow::request& req, pqxx::connection&
         
         int slotId = std::stoi(idStr);
 
-        pqxx::result res = txn.exec_params(
-            "SELECT id, slot_name, area_type, status, container_no, "
-            "order_id, driver_name, in_time, remark, created_at, updated_at "
-            "FROM yard_slot WHERE id = $1 AND deleted_at IS NULL",
+        // ✅ 移除 vehicle_no，改为从 vehicle 表关联查询
+        pqxx::result slotRes = txn.exec_params(
+            "SELECT ys.id, ys.slot_name, ys.area_type, ys.status, ys.container_no, "
+            "ys.vehicle_id, ys.order_id, ys.in_time, ys.remark, ys.created_at, ys.updated_at, "
+            "v.license_plate AS vehicle_no, v.type AS vehicle_type, v.driver_id, "
+            "d.name AS driver_name "
+            "FROM yard_slot ys "
+            "LEFT JOIN vehicle v ON ys.vehicle_id = v.id "
+            "LEFT JOIN driver d ON v.driver_id = d.id "
+            "WHERE ys.id = $1 AND ys.deleted_at IS NULL",
             slotId
         );
 
-        if (res.empty()) {
+        if (slotRes.empty()) {
             result["retCode"] = 404;
             result["errorMsg"] = "Slot not found";
             return crow::response(404, result);
         }
 
-        const auto& row = res[0];
+        const auto& row = slotRes[0];
         crow::json::wvalue slot;
         slot["id"] = row["id"].as<int>();
         slot["name"] = row["slot_name"].as<std::string>();
         slot["areaType"] = row["area_type"].as<std::string>();
         slot["status"] = row["status"].as<std::string>();
         slot["containerNo"] = row["container_no"].is_null() ? "" : row["container_no"].as<std::string>();
-        slot["orderId"] = row["order_id"].is_null() ? "" : row["order_id"].as<std::string>();
+        slot["vehicleId"] = row["vehicle_id"].is_null() ? 0 : row["vehicle_id"].as<int>();
+        slot["vehicleNo"] = row["vehicle_no"].is_null() ? "" : row["vehicle_no"].as<std::string>();
+        slot["vehicleType"] = row["vehicle_type"].is_null() ? "" : row["vehicle_type"].as<std::string>();
         slot["driverName"] = row["driver_name"].is_null() ? "" : row["driver_name"].as<std::string>();
+        slot["driverId"] = row["driver_id"].is_null() ? 0 : row["driver_id"].as<int>();
+        slot["orderId"] = row["order_id"].is_null() ? "" : row["order_id"].as<std::string>();
         slot["inTime"] = row["in_time"].is_null() ? "" : row["in_time"].as<std::string>();
         slot["remark"] = row["remark"].is_null() ? "" : row["remark"].as<std::string>();
         slot["createdAt"] = row["created_at"].is_null() ? "" : row["created_at"].as<std::string>();
@@ -2488,6 +2523,280 @@ crow::response getYardSlotDetailFunc(const crow::request& req, pqxx::connection&
     }
 }
 
+// ==================== 获取今日订单 ====================
+crow::response getTodayOrdersFunc(const crow::request& req, pqxx::connection& conn) {
+    crow::json::wvalue result;
+    
+    std::string token = req.get_header_value("token");
+    if (token.empty()) {
+        result["retCode"] = 401;
+        result["errorMsg"] = "Missing token";
+        return crow::response(401, result);
+    }
+
+    try {
+        pqxx::work txn(conn);
+        
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{"user_management"})
+            .with_issuer("user_management");
+        verifier.verify(decoded);
+
+        auto get_param = [&req](const std::string& key) -> std::string {
+            char* value = req.url_params.get(key);
+            return value ? std::string(value) : "";
+        };
+
+        int pageNum = 1;
+        int pageSize = 10;
+        std::string pageNumStr = get_param("pageNum");
+        if (!pageNumStr.empty()) pageNum = std::stoi(pageNumStr);
+        std::string pageSizeStr = get_param("pageSize");
+        if (!pageSizeStr.empty()) pageSize = std::stoi(pageSizeStr);
+        int offset = (pageNum - 1) * pageSize;
+
+        auto now = std::chrono::system_clock::now();
+        std::time_t now_time_t = std::chrono::system_clock::to_time_t(now);
+        std::tm* now_tm = std::localtime(&now_time_t);
+        std::ostringstream todayOss;
+        todayOss << (now_tm->tm_year + 1900) << "-" 
+                 << std::setw(2) << std::setfill('0') << (now_tm->tm_mon + 1) << "-" 
+                 << std::setw(2) << std::setfill('0') << now_tm->tm_mday;
+        std::string todayStr = todayOss.str();
+
+        std::string query = 
+            "SELECT o.id, o.start_point, o.end_point, o.status, "
+            "v.license_plate AS vehicle_no, "
+            "d.name AS driver_name "
+            "FROM orders o "
+            "LEFT JOIN task t ON o.id = t.order_id "
+            "LEFT JOIN vehicle v ON t.vehicle_id = v.id "
+            "LEFT JOIN driver d ON t.driver_id = d.id "
+            "WHERE DATE(o.create_time) = $1 "
+            "ORDER BY o.id DESC "
+            "LIMIT $2 OFFSET $3";
+
+        pqxx::result res = txn.exec_params(
+            query,
+            todayStr.c_str(),
+            pageSize,
+            offset
+        );
+
+        pqxx::result countRes = txn.exec_params(
+            "SELECT COUNT(*) FROM orders WHERE DATE(create_time) = $1",
+            todayStr.c_str()
+        );
+        int total = countRes[0][0].as<int>();
+
+        crow::json::wvalue::list orderList;
+        for (const auto& row : res) {
+            crow::json::wvalue order;
+            order["id"] = row[0].as<int>();
+            order["start_point"] = row[1].is_null() ? "" : row[1].as<std::string>();
+            order["end_point"] = row[2].is_null() ? "" : row[2].as<std::string>();
+            order["status"] = row[3].is_null() ? 1 : row[3].as<int>();
+            order["vehicle_no"] = row[4].is_null() ? "" : row[4].as<std::string>();
+            order["driver_name"] = row[5].is_null() ? "" : row[5].as<std::string>();
+            orderList.push_back(std::move(order));
+        }
+
+        result["retCode"] = 200;
+        result["data"] = std::move(orderList);
+        result["total"] = total;
+        result["pageNum"] = pageNum;
+        result["pageSize"] = pageSize;
+
+        txn.commit();
+        return crow::response(200, result);
+
+    } catch (const std::exception& e) {
+        std::cerr << "Get Today Orders Error: " << e.what() << std::endl;
+        result["retCode"] = 500;
+        result["errorMsg"] = e.what();
+        return crow::response(500, result);
+    }
+}
+
+// ==================== 更新 Parking Area 车辆（车辆停入/驶出） ====================
+crow::response updateYardSlotVehicleFunc(const crow::request& req, pqxx::connection& conn) {
+    crow::json::wvalue result;
+    
+    std::string token = req.get_header_value("token");
+    if (token.empty()) {
+        result["retCode"] = 401;
+        result["errorMsg"] = "Missing token";
+        return crow::response(401, result);
+    }
+
+    auto body = crow::json::load(req.body);
+    if (!body) {
+        result["retCode"] = 400;
+        result["errorMsg"] = "Request body error";
+        return crow::response(400, result);
+    }
+
+    try {
+        pqxx::work txn(conn);
+        
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{"user_management"})
+            .with_issuer("user_management");
+        verifier.verify(decoded);
+
+        const std::string username = decoded.get_subject();
+        auto [userId, userName] = getCurrentUser(txn, username);
+        if (userId == 0) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "User not found";
+            return crow::response(400, result);
+        }
+
+        if (!body.has("slotId") || !body.has("action")) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "slotId and action are required";
+            return crow::response(400, result);
+        }
+
+        int slotId = body["slotId"].i();
+        std::string action = body["action"].s();
+
+        // ✅ 移除 vehicle_no
+        pqxx::result slotRes = txn.exec_params(
+            "SELECT slot_name, area_type, status, vehicle_id, remark "
+            "FROM yard_slot WHERE id = $1 AND area_type = 'parking' AND deleted_at IS NULL",
+            slotId
+        );
+        if (slotRes.empty()) {
+            result["retCode"] = 404;
+            result["errorMsg"] = "Parking slot not found";
+            return crow::response(404, result);
+        }
+
+        std::string slotName = slotRes[0]["slot_name"].as<std::string>();
+        std::string currentStatus = slotRes[0]["status"].as<std::string>();
+        int currentVehicleId = slotRes[0]["vehicle_id"].is_null() ? 0 : slotRes[0]["vehicle_id"].as<int>();
+
+        if (action == "park_in") {
+            if (currentStatus == "reserved") {
+                result["retCode"] = 400;
+                result["errorMsg"] = "This parking slot is reserved, cannot park in";
+                return crow::response(400, result);
+            }
+            
+            if (currentStatus == "occupied") {
+                result["retCode"] = 400;
+                result["errorMsg"] = "This parking slot is already occupied";
+                return crow::response(400, result);
+            }
+
+            if (!body.has("vehicleId")) {
+                result["retCode"] = 400;
+                result["errorMsg"] = "vehicleId is required for park_in action";
+                return crow::response(400, result);
+            }
+
+            int vehicleId = body["vehicleId"].i();
+            
+            pqxx::result vehicleRes = txn.exec_params(
+                "SELECT license_plate FROM vehicle WHERE id = $1",
+                vehicleId
+            );
+            if (vehicleRes.empty()) {
+                result["retCode"] = 404;
+                result["errorMsg"] = "Vehicle not found";
+                return crow::response(404, result);
+            }
+            std::string licensePlate = vehicleRes[0]["license_plate"].as<std::string>();
+
+            pqxx::result checkRes = txn.exec_params(
+                "SELECT id FROM yard_slot WHERE vehicle_id = $1 AND area_type = 'parking' AND status = 'occupied' AND deleted_at IS NULL",
+                vehicleId
+            );
+            if (!checkRes.empty()) {
+                result["retCode"] = 400;
+                result["errorMsg"] = "Vehicle is already parked in another slot";
+                return crow::response(400, result);
+            }
+
+            std::string remark = "";
+            if (body.has("remark")) {
+                remark = body["remark"].s();
+            }
+            
+            // ✅ 移除 vehicle_no 字段
+            txn.exec_params(
+                "UPDATE yard_slot SET "
+                "status = 'occupied', vehicle_id = $1, "
+                "in_time = CURRENT_TIMESTAMP, remark = $2, updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = $3",
+                vehicleId,
+                remark.empty() ? nullptr : remark.c_str(),
+                slotId
+            );
+
+            addYardLog(txn, slotId, slotName, "parking", "park_in", "", "", "", 
+                       "车辆 " + licensePlate + " 停入", userId, userName);
+
+            result["retCode"] = 200;
+            result["msg"] = "Vehicle parked in successfully";
+            result["data"]["vehicleId"] = vehicleId;
+            result["data"]["vehicleNo"] = licensePlate;
+            
+        } else if (action == "park_out") {
+            if (currentStatus != "occupied") {
+                result["retCode"] = 400;
+                result["errorMsg"] = "This parking slot is not occupied";
+                return crow::response(400, result);
+            }
+
+            if (currentVehicleId == 0) {
+                result["retCode"] = 400;
+                result["errorMsg"] = "No vehicle in this parking slot";
+                return crow::response(400, result);
+            }
+
+            std::string remark = "";
+            if (body.has("remark")) {
+                remark = body["remark"].s();
+            }
+
+            // ✅ 移除 vehicle_no 字段
+            txn.exec_params(
+                "UPDATE yard_slot SET "
+                "status = 'empty', vehicle_id = NULL, "
+                "in_time = NULL, remark = $1, updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = $2",
+                remark.empty() ? nullptr : remark.c_str(),
+                slotId
+            );
+
+            addYardLog(txn, slotId, slotName, "parking", "park_out", "", "", "", 
+                       "车辆驶出", userId, userName);
+
+            result["retCode"] = 200;
+            result["msg"] = "Vehicle parked out successfully";
+            
+        } else {
+            result["retCode"] = 400;
+            result["errorMsg"] = "Invalid action. Supported: park_in, park_out";
+            return crow::response(400, result);
+        }
+
+        txn.commit();
+        return crow::response(200, result);
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Update Yard Slot Vehicle Error: " << e.what() << std::endl;
+        result["retCode"] = 500;
+        result["errorMsg"] = e.what();
+        return crow::response(500, result);
+    }
+}
+
+// ==================== 注册 API ====================
 AUTO_REGISTER_DISPATCH_API("addDriver", addDriverFunc);
 AUTO_REGISTER_DISPATCH_API("updateDriver", updateDriverFunc);
 AUTO_REGISTER_DISPATCH_API("deleteDriver", deleteDriverFunc);
@@ -2508,3 +2817,5 @@ AUTO_REGISTER_DISPATCH_API("updateYardSlotStatus", updateYardSlotStatusFunc);
 AUTO_REGISTER_DISPATCH_API("updateYardSlot", updateYardSlotFunc);
 AUTO_REGISTER_DISPATCH_API("queryYardLogs", queryYardLogsFunc);
 AUTO_REGISTER_DISPATCH_API("getYardSlotDetail", getYardSlotDetailFunc);
+AUTO_REGISTER_DISPATCH_API("getTodayOrders", getTodayOrdersFunc);
+AUTO_REGISTER_DISPATCH_API("updateYardSlotVehicle", updateYardSlotVehicleFunc);

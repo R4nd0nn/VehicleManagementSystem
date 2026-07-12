@@ -263,6 +263,38 @@ int main() {
         });
     }
 
+    auto getTodayOrdersFunc = DispatchControllerFactory::instance().create("getTodayOrders");
+    if (getTodayOrdersFunc) {
+        CROW_ROUTE(app, "/dispatch_mng/getTodayOrders").methods("GET"_method)
+        ([getTodayOrdersFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue result;
+                result["retCode"] = 400;
+                result["errorMsg"] = "Database connection failed";
+                return crow::response(400, result);
+            }
+            return getTodayOrdersFunc(req, *connGuard);
+        });
+    } else {
+        std::cout << "getTodayOrdersFunc not exist" << std::endl;
+    }
+
+    auto updateYardSlotVehicleFunc = DispatchControllerFactory::instance().create("updateYardSlotVehicle");
+    if (updateYardSlotVehicleFunc) {
+        CROW_ROUTE(app, "/dispatch_mng/updateYardSlotVehicle").methods("POST"_method)
+        ([updateYardSlotVehicleFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue result;
+                result["retCode"] = 400;
+                result["errorMsg"] = "Database connection failed";
+                return crow::response(400, result);
+            }
+            return updateYardSlotVehicleFunc(req, *connGuard);
+        });
+    }
+
     std::cout << "Dispatch Management Service running on port " << DISPATCH_MANAGE_PORT << std::endl;
     app.port(DISPATCH_MANAGE_PORT).multithreaded().run();
     

@@ -55,6 +55,62 @@ static std::string convertDate(const std::string& dateStr)
     return "";
 }
 
+// ==================== 工具函数：从订单创建货柜 ====================
+void createContainerFromOrder(pqxx::work& txn, const std::string& container_no, 
+                               const std::string& customer_note,
+                               const std::string& last_free_date,
+                               int userId, int orderId) {
+    if (container_no.empty()) {
+        throw std::runtime_error("container_no is empty, cannot create container");
+    }
+    
+    // 检查 container 是否已存在（通过 container_no）
+    pqxx::result checkRes = txn.exec_params(
+        "SELECT id FROM container WHERE container_no = $1 AND deleted_at IS NULL",
+        container_no.c_str()
+    );
+    
+    if (!checkRes.empty()) {
+        // Container 已存在，跳过创建
+        std::cout << "[INFO] Container " << container_no << " already exists, skipping creation" << std::endl;
+        return;
+    }
+    
+    // 解析 last_free_date 作为 free_expired_time
+    int freeExpiredTime = 7;  // 默认 7 天
+    if (!last_free_date.empty()) {
+        std::tm tm = {};
+        std::istringstream ss(last_free_date);
+        ss >> std::get_time(&tm, "%Y-%m-%d");
+        if (!ss.fail()) {
+            auto lastFree = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+            auto now = std::chrono::system_clock::now();
+            auto diff = std::chrono::duration_cast<std::chrono::hours>(lastFree - now).count();
+            freeExpiredTime = diff / 24;
+            if (freeExpiredTime < 0) freeExpiredTime = 0;
+        }
+    }
+    
+    // 生成 waybill_no: "order-" + order_id
+    std::string waybill_no = "order-" + std::to_string(orderId);
+    
+    // 插入 container
+    txn.exec_params(
+        "INSERT INTO container ("
+        "container_no, status, free_days, free_expired_time, "
+        "customer_requirement, waybill_no, created_by, updated_by, created_at, updated_at"
+        ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        container_no.c_str(),
+        "空柜",
+        7,
+        freeExpiredTime,
+        customer_note.empty() ? nullptr : customer_note.c_str(),
+        waybill_no.c_str(),
+        userId,
+        userId
+    );
+}
+
 // 导入 Excel
 crow::response importExcelFunc(const crow::request& req, pqxx::connection& conn) {
     crow::json::wvalue result;
@@ -180,20 +236,6 @@ crow::response importExcelFunc(const crow::request& req, pqxx::connection& conn)
                 }
                 else {
                     result += ' ';
-                }
-            }
-            return result;
-        };
-
-        auto safeTruncate = [](const std::string& str, size_t maxLen) -> std::string {
-            if (str.length() <= maxLen) return str;
-            std::string result = str.substr(0, maxLen);
-            while (!result.empty() && (result.back() & 0x80)) {
-                if ((result.back() & 0xC0) == 0x80) {
-                    result.pop_back();
-                } else {
-                    result.pop_back();
-                    break;
                 }
             }
             return result;
@@ -419,6 +461,11 @@ crow::response importExcelFunc(const crow::request& req, pqxx::connection& conn)
                         continue;
                     }
                     consecutiveEmpty = 0;
+
+                    // 检查 container_no 是否为空
+                    if (container_no.empty()) {
+                        throw std::runtime_error("container_no is empty at row " + std::to_string(rowNum));
+                    }
                     
                     std::string size = getVal("size");
                     std::string pin = getVal("pin");
@@ -469,14 +516,15 @@ crow::response importExcelFunc(const crow::request& req, pqxx::connection& conn)
                     gate_out = safeTruncate(gate_out, 50);
                     tt = safeTruncate(tt, 50);
                     
-                    txn.exec_params(
+                    // 插入 orders 并获取 id
+                    pqxx::result res = txn.exec_params(
                         "INSERT INTO orders ("
                         "type, start_point, end_point, size, container_no, pin, customer_note, "
                         "vessel, shipping_line, eta, first_available, last_free_date, "
                         "client_name, customer_address, forwarder, weight, noted, invoice_id, "
                         "status, process_client_id, create_user_id, gate_in, gate_out, tt"
                         ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, "
-                        "$15, $16, $17, $18, $19, $20, $21, $22, $23, $24)",
+                        "$15, $16, $17, $18, $19, $20, $21, $22, $23, $24) RETURNING id",
                         typeVal,
                         start_point.empty() ? nullptr : start_point.c_str(),
                         end_point.empty() ? nullptr : end_point.c_str(),
@@ -502,6 +550,17 @@ crow::response importExcelFunc(const crow::request& req, pqxx::connection& conn)
                         gate_out.empty() ? nullptr : gate_out.c_str(),
                         tt.empty() ? nullptr : tt.c_str()
                     );
+
+                    if (res.empty()) {
+                        throw std::runtime_error("Failed to insert order at row " + std::to_string(rowNum));
+                    }
+
+                    int orderId = res[0]["id"].as<int>();
+
+                    // ✅ 创建对应的 container
+                    createContainerFromOrder(txn, container_no, customer_note, 
+                                              last_free_date, userId, orderId);
+
                     successCount++;
                     sheetSuccess++;
                     
@@ -532,10 +591,7 @@ crow::response importExcelFunc(const crow::request& req, pqxx::connection& conn)
                     try { txn.exec("ROLLBACK TO SAVEPOINT " + spName); } catch (...) {}
                     if (sheetFail <= 5) {
                         std::cerr << "[ERROR] Sheet " << sheetNames[sheetIdx] << " Row " << rowNum << ": " << e.what() << std::endl;
-                        std::cerr << "  >> TYPE=" << type_raw << " ETA=" << eta_raw
-                                  << " FA=" << first_available_raw << " LFD=" << last_free_date_raw
-                                  << " WT=" << weight_raw << " GI=" << gate_in_raw
-                                  << " GO=" << gate_out_raw << " TT=" << tt_raw << std::endl;
+                        std::cerr << "  >> " << e.what() << std::endl;
                     }
                 }
                 
@@ -612,7 +668,6 @@ crow::response addOrderFunc(const crow::request& req, pqxx::connection& conn) {
 
         const std::string username = decoded.get_subject();
 
-        // ========== 新增：根据 username 查询 staff id ==========
         pqxx::result staffRes = txn.exec_params(
             "SELECT id FROM staff WHERE username = $1", username);
         
@@ -624,24 +679,37 @@ crow::response addOrderFunc(const crow::request& req, pqxx::connection& conn) {
         
         int userId = staffRes[0]["id"].as<int>();
 
-        // ===================== 数字类型：没有就用 0 =====================
-        int type = 0;
+        // ===================== 解析参数 =====================
+        // ✅ 修复：type 支持字符串 "IMPORT"/"EXPORT"
+        int type = 1; // 默认 IMPORT
         if (body.has("type")) {
-            type = std::stoi(body["type"].s());
+            std::string typeStr = body["type"].s();
+            std::string upperType = typeStr;
+            std::transform(upperType.begin(), upperType.end(), upperType.begin(), ::toupper);
+            
+            if (upperType == "EXPORT") {
+                type = 2;
+            } else if (upperType == "IMPORT") {
+                type = 1;
+            } else {
+                // 如果是数字字符串，尝试转换
+                try {
+                    type = std::stoi(typeStr);
+                } catch (...) {
+                    type = 1;
+                }
+            }
         }
 
         int weight = 0;
         if (body.has("weight")) {
-            weight = std::stoi(body["weight"].s());
+            try {
+                weight = std::stoi(body["weight"].s());
+            } catch (...) {
+                weight = 0;
+            }
         }
 
-        // ✅ 修复1：正确转换 invoice_id
-        int invoice_id = 0;
-        if (body.has("invoice")) {
-            invoice_id = std::stoi(body["invoice"].s());
-        }
-
-        // ===================== 字符串类型：没有就用 "" =====================
         std::string start_point = "";
         if (body.has("from")) {
             start_point = body["from"].s();
@@ -660,6 +728,13 @@ crow::response addOrderFunc(const crow::request& req, pqxx::connection& conn) {
         std::string container_no = "";
         if (body.has("containerNo")) {
             container_no = body["containerNo"].s();
+        }
+
+        // 校验 container_no 是否为空
+        if (container_no.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "container_no is required, cannot create order without container";
+            return crow::response(400, result);
         }
 
         std::string pin = "";
@@ -702,7 +777,6 @@ crow::response addOrderFunc(const crow::request& req, pqxx::connection& conn) {
             noted = body["noted"].s();
         }
 
-        // ===================== 日期类型：没有就用 0001-01-01 =====================
         std::string eta = "0001-01-01";
         if (body.has("eta")) {
             eta = body["eta"].s();
@@ -718,29 +792,44 @@ crow::response addOrderFunc(const crow::request& req, pqxx::connection& conn) {
             last_free_date = body["lastFreeDate"].s();
         }
 
-        // 默认字段
         int status = 1;
         int process_client_id = userId;
-        txn.exec_params(
+        
+        // 插入 orders 并获取 id
+        pqxx::result res = txn.exec_params(
             "INSERT INTO orders ("
             "type, start_point, end_point, size, container_no, pin, customer_note, "
             "vessel, shipping_line, eta, first_available, last_free_date, "
-            "client_name, customer_address, forwarder, weight, invoice_id, noted, "
+            "client_name, customer_address, forwarder, weight, noted, "
             "status, process_client_id, create_time, create_user_id"
-            ") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,CURRENT_TIMESTAMP,$21)",
+            ") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,CURRENT_TIMESTAMP,$20) RETURNING id",
             type, start_point, end_point, size, container_no, pin, customer_note,
             vessel, shipping_line, eta, first_available, last_free_date,
-            client_name, customer_address, forwarder, weight, invoice_id, noted,
+            client_name, customer_address, forwarder, weight, noted,
             status, process_client_id, userId
         );
 
+        if (res.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "Failed to insert order";
+            return crow::response(400, result);
+        }
+
+        int orderId = res[0]["id"].as<int>();
+
+        // 创建对应的 container
+        createContainerFromOrder(txn, container_no, customer_note, 
+                                  last_free_date, userId, orderId);
+
         result["retCode"] = 200;
+        result["msg"] = "Order and container created successfully";
+        result["orderId"] = orderId;
         txn.commit();
 
     } catch (const std::exception& e) {
         std::cerr << "Add Order Error: " << e.what() << std::endl;
         result["retCode"] = 400;
-        result["errorMsg"] = "Database error";
+        result["errorMsg"] = e.what();
         return crow::response(400, result);
     }
 

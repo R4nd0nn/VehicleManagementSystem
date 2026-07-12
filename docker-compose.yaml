@@ -188,6 +188,63 @@ services:
     - postgres
     restart: unless-stopped
 
+  fee-management:
+    image: quay.io/centos/centos:stream9
+    container_name: fee-management-service
+    working_dir: /app
+    command: sh -c "dnf install -y postgresql-libs && ./fee_management"
+    ports:
+    - "8087:8087"
+    volumes:
+    - /home/VehicleManagementSystem/fee_management/output/fee_management:/app/fee_management
+    environment:
+    - DB_HOST=postgres
+    - DB_PORT=5432
+    - DB_USER=admin
+    - DB_PASSWORD=admin123
+    - DB_NAME=vehicleManageDB
+    depends_on:
+    - postgres
+    restart: unless-stopped
+
+  exception-management:
+    image: quay.io/centos/centos:stream9
+    container_name: exception-management-service
+    working_dir: /app
+    command: sh -c "dnf install -y postgresql-libs && ./exception_management"
+    ports:
+    - "8088:8088"
+    volumes:
+    - /home/VehicleManagementSystem/exception_management/output/exception_management:/app/exception_management
+    environment:
+    - DB_HOST=postgres
+    - DB_PORT=5432
+    - DB_USER=admin
+    - DB_PASSWORD=admin123
+    - DB_NAME=vehicleManageDB
+    depends_on:
+    - postgres
+    restart: unless-stopped
+
+  dashboard-management:
+    image: quay.io/centos/centos:stream9
+    container_name: dashboard-management-service
+    working_dir: /app
+    command: sh -c "dnf install -y postgresql-libs && ./dashboard_management"
+    ports:
+    - "8089:8089"
+    volumes:
+    - /home/VehicleManagementSystem/dashboard_management/output/dashboard_management:/app/dashboard_management
+    environment:
+    - DB_HOST=postgres
+    - DB_PORT=5432
+    - DB_USER=admin
+    - DB_PASSWORD=admin123
+    - DB_NAME=vehicleManageDB
+    depends_on:
+    - postgres
+    restart: unless-stopped
+
   auth-service:
     image: python:3.9-slim
     container_name: auth_service

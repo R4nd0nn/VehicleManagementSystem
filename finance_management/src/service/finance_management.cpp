@@ -123,9 +123,9 @@ crow::response getMonthlyReportFunc(const crow::request& req, pqxx::connection& 
         );
         int containerCount = containerCountRes[0][0].as<int>();
         
-        // 1.2 本月发票总额（从 orders 表关联 container）
+        // 1.2 本月发票总额
         pqxx::result invoiceRes = txn.exec_params(
-            "SELECT COALESCE(SUM(CAST(invoice_amount AS DECIMAL)), 0) FROM container "
+            "SELECT COALESCE(SUM(invoice_amount), 0) FROM container "
             "WHERE pickup_time >= $1 AND pickup_time < $2 AND deleted_at IS NULL",
             startDate.c_str(), endDate.c_str()
         );
@@ -147,23 +147,23 @@ crow::response getMonthlyReportFunc(const crow::request& req, pqxx::connection& 
         reportData["incomeRows"] = std::move(incomeRows);
         reportData["totalIncome"] = invoiceTotal;
         
-        // ========== 2. 固定支出 ==========
-        // 2.1 码头费用（从 container_cost 汇总）
+        // ========== 2. 固定支出（从 fee 表获取） ==========
+        // 2.1 码头费用（fee_type = '码头费用'）
         pqxx::result wharfFeeRes = txn.exec_params(
-            "SELECT COALESCE(SUM(cc.amount), 0) FROM container_cost cc "
-            "JOIN container c ON cc.container_id = c.id "
+            "SELECT COALESCE(SUM(f.amount), 0) FROM fee f "
+            "JOIN container c ON f.container_id = c.id "
             "WHERE c.pickup_time >= $1 AND c.pickup_time < $2 "
-            "AND cc.cost_type = '码头费用' AND c.deleted_at IS NULL",
+            "AND f.fee_type = '码头费用' AND c.deleted_at IS NULL",
             startDate.c_str(), endDate.c_str()
         );
         double wharfFee = wharfFeeRes[0][0].as<double>();
         
-        // 2.2 工资（从 container_cost 汇总人工费用）
+        // 2.2 工资/人工费用（fee_type = '人工费用'）
         pqxx::result salaryRes = txn.exec_params(
-            "SELECT COALESCE(SUM(cc.amount), 0) FROM container_cost cc "
-            "JOIN container c ON cc.container_id = c.id "
+            "SELECT COALESCE(SUM(f.amount), 0) FROM fee f "
+            "JOIN container c ON f.container_id = c.id "
             "WHERE c.pickup_time >= $1 AND c.pickup_time < $2 "
-            "AND cc.cost_type = '人工费用' AND c.deleted_at IS NULL",
+            "AND f.fee_type = '人工费用' AND c.deleted_at IS NULL",
             startDate.c_str(), endDate.c_str()
         );
         double salary = salaryRes[0][0].as<double>();

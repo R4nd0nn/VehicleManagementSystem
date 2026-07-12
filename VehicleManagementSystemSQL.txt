@@ -82,6 +82,8 @@ CREATE TABLE IF NOT EXISTS container (
     waybill_no VARCHAR(50),                                -- 关联运单号
     port VARCHAR(100),                                     -- 港口
     customer_requirement TEXT,                             -- 客人要求
+    invoice_amount DECIMAL(12,2) DEFAULT 0,                -- 发票金额
+    cost_status VARCHAR(20) DEFAULT '待核算',              -- 费用状态：待核算/已核算
     created_by INT,                                        -- 创建人ID
     updated_by INT,                                        -- 更新人ID
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -90,15 +92,23 @@ CREATE TABLE IF NOT EXISTS container (
     deleted_by INT                                         -- 删除人ID
 );
 
--- 6. FEE 任务费用表
+-- 6. FEE 费用明细表（以 container + order 为粒度）
 DROP TABLE IF EXISTS fee;
 CREATE TABLE IF NOT EXISTS fee (
     id SERIAL PRIMARY KEY,
-    task_id INTEGER,
-    fee_type INTEGER,
-    fee_note VARCHAR(255),
-    create_time TIMESTAMP,
-    img_id INTEGER
+    container_id INT NOT NULL,                             -- 关联货柜ID
+    order_id INT NOT NULL,                                 -- 关联订单ID
+    fee_type VARCHAR(50) NOT NULL,                         -- 费用类型：码头费用/人工费用/油费/过桥费/其他
+    fee_name VARCHAR(255) NOT NULL,                        -- 费用名称：infra levy、司机工资
+    amount DECIMAL(12,2) NOT NULL DEFAULT 0,               -- 金额
+    fee_note VARCHAR(500),                                 -- 备注
+    img_id INT,                                            -- 图片ID（保留）
+    created_by INT,                                        -- 创建人ID
+    updated_by INT,                                        -- 更新人ID
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- 联合唯一：同一个货柜+同一个订单下不能有重复的费用项
+    UNIQUE(container_id, order_id, fee_name)
 );
 
 -- 7. ORDER 订单表
@@ -126,7 +136,7 @@ CREATE TABLE IF NOT EXISTS orders (
     gate_in VARCHAR(255),                    -- Gate in (2024 sheet 独有)
     gate_out VARCHAR(255),                   -- Gate out (2024 sheet 独有)
     tt VARCHAR(255),                         -- TT (2024 sheet 独有)
-    status INTEGER DEFAULT 1,               -- 1:未分配, 2:进行中, 3:已完成, 4:已取消, 5:订单异常
+    status INTEGER DEFAULT 1,               -- 1:未分配, 2:进行中, 3：待审核， 4:已完成, 5:已取消, 6:订单异常
     process_client_id INTEGER,
     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     create_user_id INTEGER
@@ -161,21 +171,22 @@ CREATE TABLE IF NOT EXISTS staff (
 DROP TABLE IF EXISTS yard_slot;
 CREATE TABLE IF NOT EXISTS yard_slot (
     id SERIAL PRIMARY KEY,
-    slot_name VARCHAR(50) NOT NULL,                    -- 位置名称: C1, C2, Trailer 1, Trailer 2...
-    area_type VARCHAR(20) NOT NULL,                    -- 区域类型: container / parking
-    status VARCHAR(20) DEFAULT 'empty',                -- 状态: empty / occupied / reserved
-    container_no VARCHAR(50),                          -- 货柜号（占用时有值）
-    order_id VARCHAR(50),                              -- 关联订单号
-    driver_name VARCHAR(100),                          -- 关联司机姓名
-    in_time TIMESTAMP,                                 -- 进场时间
-    remark TEXT,                                       -- 备注
-    created_by INT,                                    -- 创建人ID
-    updated_by INT,                                    -- 更新人ID
+    slot_name VARCHAR(50) NOT NULL,
+    area_type VARCHAR(20) NOT NULL,
+    status VARCHAR(20) DEFAULT 'empty',
+    container_no VARCHAR(50),
+    vehicle_id INT,                                     -- 关联车辆 ID
+    driver_id INT,                                      -- 关联司机 ID（通过 vehicle 表间接关联）
+    order_id VARCHAR(50),
+    in_time TIMESTAMP,
+    remark TEXT,
+    created_by INT,
+    updated_by INT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    deleted_at TIMESTAMP,                              -- 软删除
-    deleted_by INT,                                    -- 删除人ID
-    UNIQUE(slot_name, area_type)                       -- 同一区域内名称唯一
+    deleted_at TIMESTAMP,
+    deleted_by INT,
+    UNIQUE(slot_name, area_type)
 );
 
 -- 11. YARD_LOG 场地操作日志表
@@ -227,4 +238,28 @@ CREATE TABLE IF NOT EXISTS monthly_expense_detail (
     created_by INT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 14. 异常管理表
+DROP TABLE IF EXISTS exception_event;
+CREATE TABLE IF NOT EXISTS exception_event (
+    id SERIAL PRIMARY KEY,
+    exception_no VARCHAR(50) NOT NULL UNIQUE,          -- 异常编号：EXC-20260711-001
+    exception_type VARCHAR(50) NOT NULL,               -- 无箱/还箱被退/故障/延误/箱损货损/客户投诉
+    related_type VARCHAR(20) NOT NULL,                 -- 订单/箱号/车辆
+    related_no VARCHAR(100) NOT NULL,                  -- 关联单号
+    reporter VARCHAR(100) NOT NULL,                    -- 上报人
+    report_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,   -- 上报时间
+    description TEXT,                                  -- 异常描述
+    handler VARCHAR(100),                              -- 处理人
+    action TEXT,                                       -- 处理措施
+    process_remark TEXT,                               -- 处理备注
+    status VARCHAR(20) DEFAULT 'pending',              -- pending/processing/completed
+    complete_time TIMESTAMP,                           -- 结案时间
+    created_by INT,
+    updated_by INT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TIMESTAMP,
+    deleted_by INT
 );
