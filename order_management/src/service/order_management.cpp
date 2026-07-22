@@ -1067,6 +1067,227 @@ crow::response queryOrdersFunc(const crow::request& req, pqxx::connection& conn)
     return crow::response(200, result);
 }
 
+// ==================== 审核通过 ====================
+crow::response approveOrderFunc(const crow::request& req, pqxx::connection& conn) {
+    crow::json::wvalue result;
+
+    // Token 校验
+    std::string token = req.get_header_value("token");
+    if (token.empty()) {
+        result["retCode"] = 401;
+        result["errorMsg"] = "Missing token";
+        return crow::response(401, result);
+    }
+
+    // 解析请求体
+    auto body = crow::json::load(req.body);
+    if (!body) {
+        result["retCode"] = 400;
+        result["errorMsg"] = "Request body error";
+        return crow::response(400, result);
+    }
+
+    try {
+        pqxx::work txn(conn);
+
+        // JWT 验证
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{"user_management"})
+            .with_issuer("user_management");
+        verifier.verify(decoded);
+
+        const std::string username = decoded.get_subject();
+
+        // 获取当前用户ID
+        pqxx::result staffRes = txn.exec_params(
+            "SELECT id FROM staff WHERE username = $1", username);
+        if (staffRes.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "User not found";
+            return crow::response(400, result);
+        }
+        int userId = staffRes[0]["id"].as<int>();
+
+        // 必填字段校验
+        if (!body.has("orderId")) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "orderId is required";
+            return crow::response(400, result);
+        }
+
+        // 解析 orderId（支持 "ORD-123" 或纯数字 "123"）
+        std::string orderIdStr = body["orderId"].s();
+        int orderId = 0;
+        
+        size_t dashPos = orderIdStr.find('-');
+        if (dashPos != std::string::npos) {
+            orderId = std::stoi(orderIdStr.substr(dashPos + 1));
+        } else {
+            orderId = std::stoi(orderIdStr);
+        }
+
+        // 检查订单是否存在且状态为待审核(3)
+        pqxx::result checkRes = txn.exec_params(
+            "SELECT id, status FROM orders WHERE id = $1", orderId);
+        if (checkRes.empty()) {
+            result["retCode"] = 404;
+            result["errorMsg"] = "Order not found";
+            return crow::response(404, result);
+        }
+
+        int currentStatus = checkRes[0]["status"].as<int>();
+        if (currentStatus != 3) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "Order is not in pending review status";
+            return crow::response(400, result);
+        }
+
+        // 审核通过：状态变为 4（已完成）
+        txn.exec_params(
+            "UPDATE orders SET status = 4, process_client_id = $1, update_time = CURRENT_TIMESTAMP WHERE id = $2",
+            userId, orderId
+        );
+
+        // 获取订单的 container_no
+        pqxx::result orderRes = txn.exec_params(
+            "SELECT container_no FROM orders WHERE id = $1", orderId);
+        std::string containerNo = orderRes[0]["container_no"].is_null() ? "" : orderRes[0]["container_no"].as<std::string>();
+
+        // 如果有关联的 container，更新其状态
+        if (!containerNo.empty()) {
+            txn.exec_params(
+                "UPDATE container SET status = '满柜', updated_at = CURRENT_TIMESTAMP WHERE container_no = $1",
+                containerNo.c_str()
+            );
+        }
+
+        result["retCode"] = 200;
+        result["msg"] = "Order approved successfully";
+        result["data"]["orderId"] = orderId;
+        result["data"]["newStatus"] = 4;
+
+        txn.commit();
+        return crow::response(200, result);
+
+    } catch (const std::exception& e) {
+        std::cerr << "Approve Order Error: " << e.what() << std::endl;
+        result["retCode"] = 500;
+        result["errorMsg"] = e.what();
+        return crow::response(500, result);
+    }
+}
+
+
+// ==================== 驳回订单 ====================
+crow::response rejectOrderFunc(const crow::request& req, pqxx::connection& conn) {
+    crow::json::wvalue result;
+
+    // Token 校验
+    std::string token = req.get_header_value("token");
+    if (token.empty()) {
+        result["retCode"] = 401;
+        result["errorMsg"] = "Missing token";
+        return crow::response(401, result);
+    }
+
+    // 解析请求体
+    auto body = crow::json::load(req.body);
+    if (!body) {
+        result["retCode"] = 400;
+        result["errorMsg"] = "Request body error";
+        return crow::response(400, result);
+    }
+
+    try {
+        pqxx::work txn(conn);
+
+        // JWT 验证
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{"user_management"})
+            .with_issuer("user_management");
+        verifier.verify(decoded);
+
+        const std::string username = decoded.get_subject();
+
+        // 获取当前用户ID
+        pqxx::result staffRes = txn.exec_params(
+            "SELECT id FROM staff WHERE username = $1", username);
+        if (staffRes.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "User not found";
+            return crow::response(400, result);
+        }
+        int userId = staffRes[0]["id"].as<int>();
+
+        // 必填字段校验
+        if (!body.has("orderId")) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "orderId is required";
+            return crow::response(400, result);
+        }
+
+        // 解析 orderId
+        std::string orderIdStr = body["orderId"].s();
+        int orderId = 0;
+        
+        size_t dashPos = orderIdStr.find('-');
+        if (dashPos != std::string::npos) {
+            orderId = std::stoi(orderIdStr.substr(dashPos + 1));
+        } else {
+            orderId = std::stoi(orderIdStr);
+        }
+
+        // 检查订单是否存在且状态为待审核(3)
+        pqxx::result checkRes = txn.exec_params(
+            "SELECT id, status FROM orders WHERE id = $1", orderId);
+        if (checkRes.empty()) {
+            result["retCode"] = 404;
+            result["errorMsg"] = "Order not found";
+            return crow::response(404, result);
+        }
+
+        int currentStatus = checkRes[0]["status"].as<int>();
+        if (currentStatus != 3) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "Order is not in pending review status";
+            return crow::response(400, result);
+        }
+
+        // 获取驳回原因（可选）
+        std::string rejectReason = "";
+        if (body.has("rejectReason")) {
+            rejectReason = body["rejectReason"].s();
+        }
+
+        // 驳回：状态变为 6（订单异常）
+        txn.exec_params(
+            "UPDATE orders SET status = 6, process_client_id = $1, noted = $2, update_time = CURRENT_TIMESTAMP WHERE id = $3",
+            userId,
+            rejectReason.empty() ? nullptr : rejectReason.c_str(),
+            orderId
+        );
+
+        result["retCode"] = 200;
+        result["msg"] = "Order rejected successfully";
+        result["data"]["orderId"] = orderId;
+        result["data"]["newStatus"] = 6;
+        result["data"]["rejectReason"] = rejectReason;
+
+        txn.commit();
+        return crow::response(200, result);
+
+    } catch (const std::exception& e) {
+        std::cerr << "Reject Order Error: " << e.what() << std::endl;
+        result["retCode"] = 500;
+        result["errorMsg"] = e.what();
+        return crow::response(500, result);
+    }
+}
+
 AUTO_REGISTER_ORDER_API("addOrder", addOrderFunc);
 AUTO_REGISTER_ORDER_API("importExcel", importExcelFunc);
 AUTO_REGISTER_ORDER_API("queryOrders", queryOrdersFunc);
+AUTO_REGISTER_ORDER_API("approveOrder", approveOrderFunc);
+AUTO_REGISTER_ORDER_API("rejectOrder", rejectOrderFunc);

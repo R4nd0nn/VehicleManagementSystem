@@ -295,6 +295,186 @@ int main() {
         });
     }
 
+    auto approveOrderFunc = DispatchControllerFactory::instance().create("approveOrder");
+    if (approveOrderFunc) {
+        CROW_ROUTE(app, "/dispatch_mng/approveOrder").methods("POST"_method)
+        ([approveOrderFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue result;
+                result["retCode"] = 400;
+                result["errorMsg"] = "Database connection failed";
+                return crow::response(400, result);
+            }
+            return approveOrderFunc(req, *connGuard);
+        });
+    }
+
+    auto reassignOrderFunc = DispatchControllerFactory::instance().create("reassignOrder");
+    if (reassignOrderFunc) {
+        CROW_ROUTE(app, "/dispatch_mng/reassignOrder").methods("POST"_method)
+        ([reassignOrderFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue result;
+                result["retCode"] = 400;
+                result["errorMsg"] = "Database connection failed";
+                return crow::response(400, result);
+            }
+            return reassignOrderFunc(req, *connGuard);
+        });
+    }
+
+    auto getOngoingOrdersFunc = DispatchControllerFactory::instance().create("getOngoingOrders");
+    if (getOngoingOrdersFunc) {
+        CROW_ROUTE(app, "/dispatch_mng/getOngoingOrders").methods("GET"_method)
+        ([getOngoingOrdersFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue result;
+                result["retCode"] = 400;
+                result["errorMsg"] = "Database connection failed";
+                return crow::response(400, result);
+            }
+            return getOngoingOrdersFunc(req, *connGuard);
+        });
+    }
+
+    auto getReviewOrdersFunc = DispatchControllerFactory::instance().create("getReviewOrders");
+    if (getReviewOrdersFunc) {
+        CROW_ROUTE(app, "/dispatch_mng/getReviewOrders").methods("GET"_method)
+        ([getReviewOrdersFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue result;
+                result["retCode"] = 400;
+                result["errorMsg"] = "Database connection failed";
+                return crow::response(400, result);
+            }
+            return getReviewOrdersFunc(req, *connGuard);
+        });
+    }
+
+    auto getTaskDetailFunc = DispatchControllerFactory::instance().create("getTaskDetail");
+    if (getTaskDetailFunc) {
+        CROW_ROUTE(app, "/dispatch_mng/getTaskDetail").methods("GET"_method)
+        ([getTaskDetailFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue result;
+                result["retCode"] = 400;
+                result["errorMsg"] = "Database connection failed";
+                return crow::response(400, result);
+            }
+            return getTaskDetailFunc(req, *connGuard);
+        });
+    }
+
+    auto getTaskListByOrderFunc = DispatchControllerFactory::instance().create("getTaskListByOrder");
+    if (getTaskListByOrderFunc) {
+        CROW_ROUTE(app, "/dispatch_mng/getTaskListByOrder").methods("GET"_method)
+        ([getTaskListByOrderFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue result;
+                result["retCode"] = 400;
+                result["errorMsg"] = "Database connection failed";
+                return crow::response(400, result);
+            }
+            return getTaskListByOrderFunc(req, *connGuard);
+        });
+    }
+
+    auto getAvailableContainersFunc = DispatchControllerFactory::instance().create("getAvailableContainers");
+    if (getAvailableContainersFunc) {
+        CROW_ROUTE(app, "/dispatch_mng/getAvailableContainers").methods("GET"_method)
+        ([getAvailableContainersFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue result;
+                result["retCode"] = 400;
+                result["errorMsg"] = "Database connection failed";
+                return crow::response(400, result);
+            }
+            return getAvailableContainersFunc(req, *connGuard);
+        });
+    }
+
+    auto getDriverAvailableTasksFunc = DispatchControllerFactory::instance().create("getDriverAvailableTasks");
+    if (getDriverAvailableTasksFunc) {
+        CROW_ROUTE(app, "/dispatch_mng/getDriverAvailableTasks").methods("GET"_method)
+        ([getDriverAvailableTasksFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue result;
+                result["retCode"] = 400;
+                result["errorMsg"] = "Database connection failed";
+                return crow::response(400, result);
+            }
+            return getDriverAvailableTasksFunc(req, *connGuard);
+        });
+    }
+
+    auto getTasksByDateAndDriverFunc = DispatchControllerFactory::instance().create("getTasksByDateAndDriver");
+    if (getTasksByDateAndDriverFunc) {
+        CROW_ROUTE(app, "/dispatch_mng/getTasksByDateAndDriver").methods("GET"_method)
+        ([getTasksByDateAndDriverFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue result;
+                result["retCode"] = 400;
+                result["errorMsg"] = "Database connection failed";
+                return crow::response(400, result);
+            }
+            return getTasksByDateAndDriverFunc(req, *connGuard);
+        });
+    }
+    
+    auto updateTaskStatusFunc = DispatchControllerFactory::instance().create("updateTaskStatus");
+    if (updateTaskStatusFunc) {
+        CROW_ROUTE(app, "/dispatch_mng/updateTaskStatus").methods("POST"_method)
+        ([updateTaskStatusFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue result;
+                result["retCode"] = 400;
+                result["errorMsg"] = "Database connection failed";
+                return crow::response(400, result);
+            }
+            return updateTaskStatusFunc(req, *connGuard);
+        });
+    }
+
+    auto addTaskToBoardFunc = DispatchControllerFactory::instance().create("addTaskToBoard");
+    if (addTaskToBoardFunc) {
+        CROW_ROUTE(app, "/dispatch_mng/addTaskToBoard").methods("POST"_method)
+        ([addTaskToBoardFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue result;
+                result["retCode"] = 400;
+                result["errorMsg"] = "Database connection failed";
+                return crow::response(400, result);
+            }
+            return addTaskToBoardFunc(req, *connGuard);
+        });
+    }
+
+        auto removeTaskFromBoardFunc = DispatchControllerFactory::instance().create("removeTaskFromBoard");
+    if (removeTaskFromBoardFunc) {
+        CROW_ROUTE(app, "/dispatch_mng/removeTaskFromBoard").methods("POST"_method)
+        ([removeTaskFromBoardFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue result;
+                result["retCode"] = 400;
+                result["errorMsg"] = "Database connection failed";
+                return crow::response(400, result);
+            }
+            return removeTaskFromBoardFunc(req, *connGuard);
+        });
+    }
+
     std::cout << "Dispatch Management Service running on port " << DISPATCH_MANAGE_PORT << std::endl;
     app.port(DISPATCH_MANAGE_PORT).multithreaded().run();
     

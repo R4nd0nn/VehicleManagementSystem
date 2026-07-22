@@ -75,14 +75,12 @@ crow::response queryContainersFunc(const crow::request& req, pqxx::connection& c
         }
 
         if (!orderId.empty()) {
-            // orderId 是 orders.id，但前端传入的是字符串，尝试转为数字
             try {
                 int orderIdInt = std::stoi(orderId);
                 whereClause += " AND f.order_id = $" + std::to_string(paramCounter);
                 params.push_back(std::to_string(orderIdInt));
                 paramCounter++;
             } catch (...) {
-                // 如果不是数字，尝试通过 waybill_no 匹配
                 whereClause += " AND (f.order_id IN (SELECT id FROM orders WHERE waybill_no LIKE $" + 
                                std::to_string(paramCounter) + "))";
                 params.push_back("%" + orderId + "%");
@@ -187,7 +185,6 @@ crow::response getContainerCostFunc(const crow::request& req, pqxx::connection& 
             .with_issuer("user_management");
         verifier.verify(decoded);
 
-        // 解析参数
         auto get_param = [&req](const std::string& key) -> std::string {
             char* value = req.url_params.get(key);
             return value ? std::string(value) : "";
@@ -223,9 +220,9 @@ crow::response getContainerCostFunc(const crow::request& req, pqxx::connection& 
         containerInfo["invoiceAmount"] = cRow["invoice_amount"].is_null() ? 0 : cRow["invoice_amount"].as<double>();
         containerInfo["costStatus"] = cRow["cost_status"].is_null() ? "待核算" : cRow["cost_status"].as<std::string>();
 
-        // 查询费用明细
+        // ✅ 查询费用明细（使用 img_url）
         pqxx::result feeRes = txn.exec_params(
-            "SELECT id, fee_type, fee_name, amount, fee_note, img_id, created_at "
+            "SELECT id, fee_type, fee_name, amount, fee_note, img_url, created_at "
             "FROM fee WHERE container_id = $1 ORDER BY id ASC",
             containerId
         );
@@ -238,7 +235,7 @@ crow::response getContainerCostFunc(const crow::request& req, pqxx::connection& 
             item["costName"] = row["fee_name"].is_null() ? "" : row["fee_name"].as<std::string>();
             item["amount"] = row["amount"].is_null() ? 0 : row["amount"].as<double>();
             item["remark"] = row["fee_note"].is_null() ? "" : row["fee_note"].as<std::string>();
-            item["imgId"] = row["img_id"].is_null() ? 0 : row["img_id"].as<int>();
+            item["imgUrl"] = row["img_url"].is_null() ? "" : row["img_url"].as<std::string>();
             item["createdAt"] = row["created_at"].is_null() ? "" : row["created_at"].as<std::string>();
             costItems.push_back(std::move(item));
         }
@@ -308,15 +305,15 @@ crow::response addContainerCostFunc(const crow::request& req, pqxx::connection& 
         std::string feeName = body["costName"].s();
         double amount = body["amount"].d();
         
-        // ✅ 修复：使用 if 语句代替三元运算符
         std::string feeNote = "";
         if (body.has("remark")) {
             feeNote = body["remark"].s();
         }
         
-        int imgId = 0;
-        if (body.has("imgId")) {
-            imgId = body["imgId"].i();
+        // ✅ 修改：img_id → img_url (字符串类型)
+        std::string imgUrl = "";
+        if (body.has("imgUrl")) {
+            imgUrl = body["imgUrl"].s();
         }
 
         // 校验金额
@@ -356,10 +353,10 @@ crow::response addContainerCostFunc(const crow::request& req, pqxx::connection& 
             return crow::response(404, result);
         }
 
-        // 插入费用项
+        // ✅ 修改：插入 img_url 而不是 img_id
         pqxx::result res = txn.exec_params(
             "INSERT INTO fee ("
-            "container_id, order_id, fee_type, fee_name, amount, fee_note, img_id, "
+            "container_id, order_id, fee_type, fee_name, amount, fee_note, img_url, "
             "created_by, updated_by, created_at, updated_at"
             ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING id",
             containerId,
@@ -368,7 +365,7 @@ crow::response addContainerCostFunc(const crow::request& req, pqxx::connection& 
             feeName.c_str(),
             amount,
             feeNote.empty() ? nullptr : feeNote.c_str(),
-            imgId == 0 ? nullptr : &imgId,
+            imgUrl.empty() ? nullptr : imgUrl.c_str(),
             userId,
             userId
         );
@@ -500,7 +497,6 @@ crow::response updateContainerCostFunc(const crow::request& req, pqxx::connectio
             paramCounter++;
         }
 
-        // ✅ 修复：使用 if 语句代替三元运算符
         if (body.has("remark")) {
             std::string feeNote = body["remark"].s();
             updateFields.push_back("fee_note = $" + std::to_string(paramCounter));
@@ -508,10 +504,11 @@ crow::response updateContainerCostFunc(const crow::request& req, pqxx::connectio
             paramCounter++;
         }
 
-        if (body.has("imgId")) {
-            int imgId = body["imgId"].i();
-            updateFields.push_back("img_id = $" + std::to_string(paramCounter));
-            params.push_back(std::to_string(imgId));
+        // ✅ 修改：img_id → img_url
+        if (body.has("imgUrl")) {
+            std::string imgUrl = body["imgUrl"].s();
+            updateFields.push_back("img_url = $" + std::to_string(paramCounter));
+            params.push_back(imgUrl);
             paramCounter++;
         }
 
@@ -777,6 +774,159 @@ crow::response updateContainerInvoiceFunc(const crow::request& req, pqxx::connec
     }
 }
 
+// ==================== 批量保存费用明细（包含发票金额 + 费用项） ====================
+crow::response saveContainerCostFunc(const crow::request& req, pqxx::connection& conn) {
+    crow::json::wvalue result;
+    
+    std::string token = req.get_header_value("token");
+    if (token.empty()) {
+        result["retCode"] = 401;
+        result["errorMsg"] = "Missing token";
+        return crow::response(401, result);
+    }
+
+    auto body = crow::json::load(req.body);
+    if (!body) {
+        result["retCode"] = 400;
+        result["errorMsg"] = "Request body error";
+        return crow::response(400, result);
+    }
+
+    try {
+        pqxx::work txn(conn);
+        
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{"user_management"})
+            .with_issuer("user_management");
+        verifier.verify(decoded);
+
+        const std::string username = decoded.get_subject();
+        int userId = getCurrentUserId(txn, username);
+        if (userId == 0) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "User not found";
+            return crow::response(400, result);
+        }
+
+        // 必填字段校验
+        if (!body.has("containerId") || !body.has("invoiceAmount")) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "containerId and invoiceAmount are required";
+            return crow::response(400, result);
+        }
+
+        int containerId = body["containerId"].i();
+        double invoiceAmount = body["invoiceAmount"].d();
+
+        // 检查货柜是否存在
+        pqxx::result containerCheck = txn.exec_params(
+            "SELECT id, cost_status FROM container WHERE id = $1 AND deleted_at IS NULL",
+            containerId
+        );
+        if (containerCheck.empty()) {
+            result["retCode"] = 404;
+            result["errorMsg"] = "Container not found";
+            return crow::response(404, result);
+        }
+
+        std::string costStatus = containerCheck[0]["cost_status"].is_null() ? "待核算" : containerCheck[0]["cost_status"].as<std::string>();
+        if (costStatus == "已核算") {
+            result["retCode"] = 403;
+            result["errorMsg"] = "Container has been audited, cannot modify costs";
+            return crow::response(403, result);
+        }
+
+        // ========== 1. 更新发票金额 ==========
+        txn.exec_params(
+            "UPDATE container SET invoice_amount = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+            invoiceAmount, containerId
+        );
+
+        // ========== 2. 处理费用项 ==========
+        if (body.has("costItems")) {
+            // 先删除该货柜的旧费用项（全部替换）
+            txn.exec_params(
+                "DELETE FROM fee WHERE container_id = $1",
+                containerId
+            );
+
+            // 遍历插入新的费用项
+            auto costItems = body["costItems"];
+            for (const auto& item : costItems) {
+                std::string feeType = "";
+                if (item.has("costType")) {
+                    feeType = item["costType"].s();
+                }
+                
+                std::string feeName = "";
+                if (item.has("costName")) {
+                    feeName = item["costName"].s();
+                }
+                
+                double amount = 0;
+                if (item.has("amount")) {
+                    amount = item["amount"].d();
+                }
+                
+                std::string feeNote = "";
+                if (item.has("remark")) {
+                    feeNote = item["remark"].s();
+                }
+                
+                // ✅ 新增：获取 img_url
+                std::string imgUrl = "";
+                if (item.has("imgUrl")) {
+                    imgUrl = item["imgUrl"].s();
+                }
+                
+                int orderId = 0;
+                
+                // 从 container 获取关联的 order_id
+                pqxx::result orderRes = txn.exec_params(
+                    "SELECT id FROM orders WHERE container_no = (SELECT container_no FROM container WHERE id = $1)",
+                    containerId
+                );
+                if (!orderRes.empty()) {
+                    orderId = orderRes[0]["id"].as<int>();
+                }
+
+                if (amount <= 0) continue;
+
+                // ✅ 插入时包含 img_url
+                txn.exec_params(
+                    "INSERT INTO fee ("
+                    "container_id, order_id, fee_type, fee_name, amount, fee_note, img_url, "
+                    "created_by, updated_by, created_at, updated_at"
+                    ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                    containerId,
+                    orderId,
+                    feeType.c_str(),
+                    feeName.c_str(),
+                    amount,
+                    feeNote.empty() ? nullptr : feeNote.c_str(),
+                    imgUrl.empty() ? nullptr : imgUrl.c_str(),
+                    userId,
+                    userId
+                );
+            }
+        }
+
+        result["retCode"] = 200;
+        result["msg"] = "Container cost saved successfully";
+        result["data"]["containerId"] = containerId;
+        result["data"]["invoiceAmount"] = invoiceAmount;
+
+        txn.commit();
+        return crow::response(200, result);
+
+    } catch (const std::exception& e) {
+        std::cerr << "Save Container Cost Error: " << e.what() << std::endl;
+        result["retCode"] = 500;
+        result["errorMsg"] = e.what();
+        return crow::response(500, result);
+    }
+}
 
 // ==================== 注册 API ====================
 AUTO_REGISTER_FEE_API("queryContainers", queryContainersFunc);
@@ -786,3 +936,4 @@ AUTO_REGISTER_FEE_API("updateContainerCost", updateContainerCostFunc);
 AUTO_REGISTER_FEE_API("deleteContainerCost", deleteContainerCostFunc);
 AUTO_REGISTER_FEE_API("auditContainer", auditContainerFunc);
 AUTO_REGISTER_FEE_API("updateContainerInvoice", updateContainerInvoiceFunc);
+AUTO_REGISTER_FEE_API("saveContainerCost", saveContainerCostFunc);

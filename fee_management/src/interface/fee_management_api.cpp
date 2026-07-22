@@ -154,7 +154,21 @@ int main() {
         std::cout << "updateContainerInvoiceFunc not exist" << std::endl;
     }
 
-    
+    // ========== 批量保存费用明细 ==========
+    auto saveContainerCostFunc = FeeControllerFactory::instance().create("saveContainerCost");
+    if (saveContainerCostFunc) {
+        CROW_ROUTE(app, "/fee_mng/saveContainerCost").methods("POST"_method)
+        ([saveContainerCostFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue result;
+                result["retCode"] = 400;
+                result["errorMsg"] = "Database connection failed";
+                return crow::response(400, result);
+            }
+            return saveContainerCostFunc(req, *connGuard);
+        });
+    }
 
     std::cout << "Fee Management Service running on port " << FEE_MANAGE_PORT << std::endl;
     app.port(FEE_MANAGE_PORT).multithreaded().run();
