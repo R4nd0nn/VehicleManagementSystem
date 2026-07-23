@@ -1344,7 +1344,6 @@ crow::response rejectOrderFunc(const crow::request& req, pqxx::connection& conn)
 crow::response updateOrderStatusFunc(const crow::request& req, pqxx::connection& conn) {
     crow::json::wvalue result;
 
-    // Token 校验
     std::string token = req.get_header_value("token");
     if (token.empty()) {
         result["retCode"] = 401;
@@ -1352,7 +1351,6 @@ crow::response updateOrderStatusFunc(const crow::request& req, pqxx::connection&
         return crow::response(401, result);
     }
 
-    // 解析请求体
     auto body = crow::json::load(req.body);
     if (!body) {
         result["retCode"] = 400;
@@ -1363,7 +1361,6 @@ crow::response updateOrderStatusFunc(const crow::request& req, pqxx::connection&
     try {
         pqxx::work txn(conn);
 
-        // JWT 验证
         auto decoded = jwt::decode(token);
         auto verifier = jwt::verify()
             .allow_algorithm(jwt::algorithm::hs256{"user_management"})
@@ -1372,7 +1369,6 @@ crow::response updateOrderStatusFunc(const crow::request& req, pqxx::connection&
 
         const std::string username = decoded.get_subject();
 
-        // 获取当前用户ID
         pqxx::result staffRes = txn.exec_params(
             "SELECT id FROM staff WHERE username = $1", username);
         if (staffRes.empty()) {
@@ -1382,7 +1378,6 @@ crow::response updateOrderStatusFunc(const crow::request& req, pqxx::connection&
         }
         int userId = staffRes[0]["id"].as<int>();
 
-        // 必填字段校验
         if (!body.has("id") || !body.has("status")) {
             result["retCode"] = 400;
             result["errorMsg"] = "id and status are required";
@@ -1392,14 +1387,12 @@ crow::response updateOrderStatusFunc(const crow::request& req, pqxx::connection&
         int orderId = body["id"].i();
         int newStatus = body["status"].i();
 
-        // 验证状态值是否在有效范围内 (1-10)
         if (newStatus < 1 || newStatus > 10) {
             result["retCode"] = 400;
             result["errorMsg"] = "Invalid status value, must be between 1 and 10";
             return crow::response(400, result);
         }
 
-        // 检查订单是否存在
         pqxx::result checkRes = txn.exec_params(
             "SELECT id, status FROM orders WHERE id = $1", orderId);
         if (checkRes.empty()) {
@@ -1410,22 +1403,12 @@ crow::response updateOrderStatusFunc(const crow::request& req, pqxx::connection&
 
         int oldStatus = checkRes[0]["status"].as<int>();
 
-        // 更新订单状态
+        // ✅ 修复：使用 updated_at（如果表中有该字段）
+        // 如果没有 updated_at，使用下面注释掉的版本
         txn.exec_params(
-            "UPDATE orders SET status = $1, process_client_id = $2, update_time = CURRENT_TIMESTAMP WHERE id = $3",
+            "UPDATE orders SET status = $1, process_client_id = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3",
             newStatus, userId, orderId
         );
-
-        // 记录状态变更日志（可选）
-        // 如果后续需要日志表，可以在这里插入记录
-        // 目前先注释掉，后续可根据需要添加
-        /*
-        txn.exec_params(
-            "INSERT INTO order_status_log (order_id, old_status, new_status, operator_id, created_at) "
-            "VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)",
-            orderId, oldStatus, newStatus, userId
-        );
-        */
 
         result["retCode"] = 200;
         result["msg"] = "Order status updated successfully";
