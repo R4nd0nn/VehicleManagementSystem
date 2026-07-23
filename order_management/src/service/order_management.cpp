@@ -640,7 +640,6 @@ crow::response importExcelFunc(const crow::request& req, pqxx::connection& conn)
 crow::response addOrderFunc(const crow::request& req, pqxx::connection& conn) {
     crow::json::wvalue result;
 
-    // Token 校验
     std::string token = req.get_header_value("token");
     if (token == "") {
         result["retCode"] = 401;
@@ -648,7 +647,6 @@ crow::response addOrderFunc(const crow::request& req, pqxx::connection& conn) {
         return crow::response(401, result);
     }
 
-    // 解析请求体
     auto body = crow::json::load(req.body);
     if (!body) {
         result["retCode"] = 400;
@@ -659,7 +657,6 @@ crow::response addOrderFunc(const crow::request& req, pqxx::connection& conn) {
     try {
         pqxx::work txn(conn);
 
-        // JWT 验证
         auto decoded = jwt::decode(token);
         auto verifier = jwt::verify()
             .allow_algorithm(jwt::algorithm::hs256{"user_management"})
@@ -680,133 +677,192 @@ crow::response addOrderFunc(const crow::request& req, pqxx::connection& conn) {
         int userId = staffRes[0]["id"].as<int>();
 
         // ===================== 解析参数 =====================
-        // ✅ 修复：type 支持字符串 "IMPORT"/"EXPORT"
-        int type = 1; // 默认 IMPORT
+        // 1. Jobs -> type
+        int type = 1;
         if (body.has("type")) {
             std::string typeStr = body["type"].s();
             std::string upperType = typeStr;
             std::transform(upperType.begin(), upperType.end(), upperType.begin(), ::toupper);
-            
             if (upperType == "EXPORT") {
                 type = 2;
             } else if (upperType == "IMPORT") {
                 type = 1;
             } else {
-                // 如果是数字字符串，尝试转换
-                try {
-                    type = std::stoi(typeStr);
-                } catch (...) {
-                    type = 1;
-                }
+                try { type = std::stoi(typeStr); } catch (...) { type = 1; }
             }
         }
 
-        int weight = 0;
-        if (body.has("weight")) {
-            try {
-                weight = std::stoi(body["weight"].s());
-            } catch (...) {
-                weight = 0;
-            }
-        }
-
-        std::string start_point = "";
-        if (body.has("from")) {
-            start_point = body["from"].s();
-        }
-
-        std::string end_point = "";
-        if (body.has("to")) {
-            end_point = body["to"].s();
-        }
-
+        // 2. Container Size -> size
         std::string size = "";
         if (body.has("size")) {
             size = body["size"].s();
         }
 
+        // 3. Container Number -> container_no
         std::string container_no = "";
         if (body.has("containerNo")) {
             container_no = body["containerNo"].s();
         }
 
-        // 校验 container_no 是否为空
         if (container_no.empty()) {
             result["retCode"] = 400;
-            result["errorMsg"] = "container_no is required, cannot create order without container";
+            result["errorMsg"] = "container_no is required";
             return crow::response(400, result);
         }
 
+        // 4. EIDO Pin -> pin
         std::string pin = "";
         if (body.has("pin")) {
             pin = body["pin"].s();
         }
 
-        std::string customer_note = "";
-        if (body.has("customerRequest")) {
-            customer_note = body["customerRequest"].s();
+        // 5. Weight -> weight
+        std::string weight = "";
+        if (body.has("weight")) {
+            weight = body["weight"].s();
         }
 
-        std::string vessel = "";
-        if (body.has("vessel")) {
-            vessel = body["vessel"].s();
-        }
-
+        // 6. Shipping Line -> shipping_line
         std::string shipping_line = "";
         if (body.has("shippingLine")) {
             shipping_line = body["shippingLine"].s();
         }
 
-        std::string client_name = "";
-        if (body.has("clientName")) {
-            client_name = body["clientName"].s();
-        }
-
-        std::string customer_address = "";
-        if (body.has("customerAddress")) {
-            customer_address = body["customerAddress"].s();
-        }
-
-        std::string forwarder = "";
-        if (body.has("forwarder")) {
-            forwarder = body["forwarder"].s();
-        }
-
-        std::string noted = "";
-        if (body.has("noted")) {
-            noted = body["noted"].s();
-        }
-
-        std::string eta = "0001-01-01";
-        if (body.has("eta")) {
-            eta = body["eta"].s();
-        }
-
-        std::string first_available = "0001-01-01";
-        if (body.has("firstAvailable")) {
-            first_available = body["firstAvailable"].s();
-        }
-
+        // 7. Free Detention Date -> last_free_date
         std::string last_free_date = "0001-01-01";
         if (body.has("lastFreeDate")) {
             last_free_date = body["lastFreeDate"].s();
         }
 
+        // ✅ 8. Pick up Location -> start_point（起点）
+        std::string start_point = "";
+        if (body.has("port")) {
+            start_point = body["port"].s();
+        }
+
+        // ✅ 9. Empty Dehire Depot -> end_point（终点）
+        std::string end_point = "";
+        if (body.has("emptyDehireDepot")) {
+            end_point = body["emptyDehireDepot"].s();
+        }
+
+        // 10. Vessel Name -> vessel
+        std::string vessel = "";
+        if (body.has("vessel")) {
+            vessel = body["vessel"].s();
+        }
+
+        // 11. ETA -> eta
+        std::string eta = "0001-01-01";
+        if (body.has("eta")) {
+            eta = body["eta"].s();
+        }
+
+        // 12. ETD -> etd
+        std::string etd = "0001-01-01";
+        if (body.has("etd")) {
+            etd = body["etd"].s();
+        }
+
+        // 13. First Free Date -> first_available
+        std::string first_available = "0001-01-01";
+        if (body.has("firstAvailable")) {
+            first_available = body["firstAvailable"].s();
+        }
+
+        // 14. Last Free Date (LFD) -> last_free_date_lfd
+        std::string last_free_date_lfd = "0001-01-01";
+        if (body.has("lastFreeDateLfd")) {
+            last_free_date_lfd = body["lastFreeDateLfd"].s();
+        }
+
+        // 15. Delivery Type -> delivery_type
+        std::string delivery_type = "";
+        if (body.has("deliveryType")) {
+            delivery_type = body["deliveryType"].s();
+        }
+
+        // 16. Door Direction -> door_direction
+        std::string door_direction = "";
+        if (body.has("doorDirection")) {
+            door_direction = body["doorDirection"].s();
+        }
+
+        // 17. Client Names -> client_name
+        std::string client_name = "";
+        if (body.has("clientName")) {
+            client_name = body["clientName"].s();
+        }
+
+        // 18. Delivery Address -> customer_address
+        std::string customer_address = "";
+        if (body.has("customerAddress")) {
+            customer_address = body["customerAddress"].s();
+        }
+
+        // ✅ 19. Instructions -> customer_note
+        std::string customer_note = "";
+        if (body.has("customerRequest")) {
+            customer_note = body["customerRequest"].s();
+        }
+
+        // 20. Forwarder Name -> forwarder
+        std::string forwarder = "";
+        if (body.has("forwarder")) {
+            forwarder = body["forwarder"].s();
+        }
+
+        // 21. Booking Person -> booking_person
+        std::string booking_person = "";
+        if (body.has("bookingPerson")) {
+            booking_person = body["bookingPerson"].s();
+        }
+
+        // 22. Extra Surcharge -> extra_surcharge
+        std::string extra_surcharge = "";
+        if (body.has("extraSurcharge")) {
+            extra_surcharge = body["extraSurcharge"].s();
+        }
+
         int status = 1;
         int process_client_id = userId;
         
-        // 插入 orders 并获取 id
+        // ===================== 插入 orders =====================
         pqxx::result res = txn.exec_params(
             "INSERT INTO orders ("
-            "type, start_point, end_point, size, container_no, pin, customer_note, "
-            "vessel, shipping_line, eta, first_available, last_free_date, "
-            "client_name, customer_address, forwarder, weight, noted, "
+            "type, size, container_no, pin, weight, shipping_line, last_free_date, "
+            "start_point, end_point, vessel, eta, etd, first_available, last_free_date_lfd, "
+            "delivery_type, door_direction, client_name, customer_address, customer_note, "
+            "forwarder, booking_person, extra_surcharge, "
             "status, process_client_id, create_time, create_user_id"
-            ") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,CURRENT_TIMESTAMP,$20) RETURNING id",
-            type, start_point, end_point, size, container_no, pin, customer_note,
-            vessel, shipping_line, eta, first_available, last_free_date,
-            client_name, customer_address, forwarder, weight, noted,
-            status, process_client_id, userId
+            ") VALUES ("
+            "$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,CURRENT_TIMESTAMP,$25"
+            ") RETURNING id",
+            type,
+            size.empty() ? nullptr : size.c_str(),
+            container_no.empty() ? nullptr : container_no.c_str(),
+            pin.empty() ? nullptr : pin.c_str(),
+            weight.empty() ? nullptr : weight.c_str(),
+            shipping_line.empty() ? nullptr : shipping_line.c_str(),
+            last_free_date == "0001-01-01" ? nullptr : last_free_date.c_str(),
+            start_point.empty() ? nullptr : start_point.c_str(),      // ✅ Pick up Location
+            end_point.empty() ? nullptr : end_point.c_str(),          // ✅ Empty Dehire Depot
+            vessel.empty() ? nullptr : vessel.c_str(),
+            eta == "0001-01-01" ? nullptr : eta.c_str(),
+            etd == "0001-01-01" ? nullptr : etd.c_str(),
+            first_available == "0001-01-01" ? nullptr : first_available.c_str(),
+            last_free_date_lfd == "0001-01-01" ? nullptr : last_free_date_lfd.c_str(),
+            delivery_type.empty() ? nullptr : delivery_type.c_str(),
+            door_direction.empty() ? nullptr : door_direction.c_str(),
+            client_name.empty() ? nullptr : client_name.c_str(),
+            customer_address.empty() ? nullptr : customer_address.c_str(),
+            customer_note.empty() ? nullptr : customer_note.c_str(),  // ✅ Instructions
+            forwarder.empty() ? nullptr : forwarder.c_str(),
+            booking_person.empty() ? nullptr : booking_person.c_str(),
+            extra_surcharge.empty() ? nullptr : extra_surcharge.c_str(),
+            status,
+            process_client_id,
+            userId
         );
 
         if (res.empty()) {
@@ -817,7 +873,6 @@ crow::response addOrderFunc(const crow::request& req, pqxx::connection& conn) {
 
         int orderId = res[0]["id"].as<int>();
 
-        // 创建对应的 container
         createContainerFromOrder(txn, container_no, customer_note, 
                                   last_free_date, userId, orderId);
 
@@ -836,11 +891,9 @@ crow::response addOrderFunc(const crow::request& req, pqxx::connection& conn) {
     return crow::response(200, result);
 }
 
-
 crow::response queryOrdersFunc(const crow::request& req, pqxx::connection& conn) {
     crow::json::wvalue result;
 
-    // Token 校验
     std::string token = req.get_header_value("token");
     if (token == "") {
         result["retCode"] = 401;
@@ -851,29 +904,30 @@ crow::response queryOrdersFunc(const crow::request& req, pqxx::connection& conn)
     try {
         pqxx::work txn(conn);
 
-        // JWT 验证
         auto decoded = jwt::decode(token);
         auto verifier = jwt::verify()
             .allow_algorithm(jwt::algorithm::hs256{"user_management"})
             .with_issuer("user_management");
         verifier.verify(decoded);
 
-        // ========== 动态构建查询条件 ==========
-        std::string baseQuery = "SELECT id, type, start_point, end_point, size, container_no, pin, customer_note, vessel, shipping_line, eta, first_available, last_free_date, client_name, customer_address, forwarder, weight, invoice_id, noted, status, process_client_id, create_time, create_user_id FROM orders WHERE 1=1";
+        // ✅ 添加新字段到 SELECT
+        std::string baseQuery = "SELECT id, type, start_point, end_point, size, container_no, pin, customer_note, "
+                                 "vessel, shipping_line, eta, first_available, last_free_date, "
+                                 "client_name, customer_address, forwarder, weight, invoice_id, noted, "
+                                 "status, process_client_id, create_time, create_user_id, "
+                                 "port, empty_dehire_depot, etd, last_free_date_lfd, "
+                                 "delivery_type, door_direction, booking_person, extra_surcharge "
+                                 "FROM orders WHERE 1=1";
+        
         std::vector<std::string> conditions;
         std::vector<std::string> params;
         int paramCounter = 1;
         
-        // 解析 GET 请求参数
-        std::unordered_map<std::string, std::string> queryParams;
-        
-        // 获取单个参数
         auto get_param = [&req](const std::string& key) -> std::string {
             char* value = req.url_params.get(key);
             return value ? std::string(value) : "";
         };
         
-        // 定义所有支持的参数
         std::vector<std::string> paramKeys = {
             "id", "type", "from", "to", "size", "containerNo", "pin", 
             "customerRequest", "vessel", "shippingLine", "eta", 
@@ -882,10 +936,11 @@ crow::response queryOrdersFunc(const crow::request& req, pqxx::connection& conn)
             "status", "process_client_id", "create_user_id",
             "eta_start", "eta_end", "first_available_start", "first_available_end",
             "last_free_date_start", "last_free_date_end",
+            "port", "etd", "delivery_type", "door_direction",
             "pageNum", "pageSize"
         };
         
-        // 获取参数值
+        std::unordered_map<std::string, std::string> queryParams;
         for (const auto& key : paramKeys) {
             std::string value = get_param(key);
             if (!value.empty()) {
@@ -893,11 +948,10 @@ crow::response queryOrdersFunc(const crow::request& req, pqxx::connection& conn)
             }
         }
         
-        // ========== 支持的所有筛选字段 ==========
         struct FilterField {
-            std::string paramName;   // 请求参数名
-            std::string dbField;     // 数据库字段名
-            bool isLike;             // 是否是模糊查询
+            std::string paramName;
+            std::string dbField;
+            bool isLike;
         };
         
         std::vector<FilterField> filters = {
@@ -929,28 +983,27 @@ crow::response queryOrdersFunc(const crow::request& req, pqxx::connection& conn)
             {"first_available_end", "first_available", false},
             {"last_free_date_start", "last_free_date", false},
             {"last_free_date_end", "last_free_date", false},
+            {"port", "port", true},
+            {"etd", "etd", false},
+            {"delivery_type", "delivery_type", false},
+            {"door_direction", "door_direction", false}
         };
         
-        // 构建动态条件
         for (const auto& filter : filters) {
             auto it = queryParams.find(filter.paramName);
             if (it != queryParams.end() && !it->second.empty()) {
                 std::string condition;
                 
                 if (filter.isLike) {
-                    // 模糊查询
                     condition = filter.dbField + " LIKE $" + std::to_string(paramCounter);
                     params.push_back("%" + it->second + "%");
                 } else if (filter.paramName.find("_start") != std::string::npos) {
-                    // 日期范围查询 - 起始
                     condition = filter.dbField + " >= $" + std::to_string(paramCounter);
                     params.push_back(it->second);
                 } else if (filter.paramName.find("_end") != std::string::npos) {
-                    // 日期范围查询 - 结束
                     condition = filter.dbField + " <= $" + std::to_string(paramCounter);
                     params.push_back(it->second);
                 } else {
-                    // 精确查询
                     condition = filter.dbField + " = $" + std::to_string(paramCounter);
                     params.push_back(it->second);
                 }
@@ -960,7 +1013,6 @@ crow::response queryOrdersFunc(const crow::request& req, pqxx::connection& conn)
             }
         }
         
-        // 添加分页支持
         int pageNum = 1;
         int pageSize = 20;
         
@@ -976,30 +1028,23 @@ crow::response queryOrdersFunc(const crow::request& req, pqxx::connection& conn)
         
         int offset = (pageNum - 1) * pageSize;
         
-        // 组装完整查询
         std::string finalQuery = baseQuery;
         for (const auto& cond : conditions) {
             finalQuery += " AND " + cond;
         }
         
-        // 添加排序
         finalQuery += " ORDER BY id DESC";
-        
-        // 添加分页
         finalQuery += " LIMIT $" + std::to_string(paramCounter) + " OFFSET $" + std::to_string(paramCounter + 1);
         params.push_back(std::to_string(pageSize));
         params.push_back(std::to_string(offset));
         
-        // 执行查询
         pqxx::result res = txn.exec_params(finalQuery, pqxx::prepare::make_dynamic_params(params));
         
-        // 查询总数（不带分页）
         std::string countQuery = "SELECT COUNT(*) FROM orders WHERE 1=1";
         for (const auto& cond : conditions) {
             countQuery += " AND " + cond;
         }
         
-        // 准备总数查询的参数（去掉分页的两个参数）
         std::vector<std::string> countParams;
         for (size_t i = 0; i < params.size() - 2; i++) {
             countParams.push_back(params[i]);
@@ -1014,13 +1059,12 @@ crow::response queryOrdersFunc(const crow::request& req, pqxx::connection& conn)
         
         int total = countRes[0][0].as<int>();
 
-        // 构建返回的JSON数组
         crow::json::wvalue::list order_list;
         
         for (const auto& row : res) {
             crow::json::wvalue order;
             order["id"] = row["id"].as<int>();
-            order["type"] = row["type"].is_null() ? "" : row["type"].c_str();
+            order["type"] = row["type"].is_null() ? 0 : row["type"].as<int>();
             order["from"] = row["start_point"].is_null() ? "" : row["start_point"].c_str();
             order["to"] = row["end_point"].is_null() ? "" : row["end_point"].c_str();
             order["size"] = row["size"].is_null() ? "" : row["size"].c_str();
@@ -1039,18 +1083,28 @@ crow::response queryOrdersFunc(const crow::request& req, pqxx::connection& conn)
             order["invoice"] = row["invoice_id"].is_null() ? "" : row["invoice_id"].c_str();
             order["noted"] = row["noted"].is_null() ? "" : row["noted"].c_str();
             
-            // 新增字段
-            order["status"] = row["status"].is_null() ? 0 : row["status"].as<int>();
+            // ✅ 返回状态值（前端根据状态映射显示对应标签和颜色）
+            order["status"] = row["status"].is_null() ? 1 : row["status"].as<int>();
+            
             order["process_client_id"] = row["process_client_id"].is_null() ? 0 : row["process_client_id"].as<int>();
             order["create_time"] = row["create_time"].is_null() ? "" : row["create_time"].c_str();
             order["create_user_id"] = row["create_user_id"].is_null() ? 0 : row["create_user_id"].as<int>();
+            
+            // 新增字段
+            order["port"] = row["port"].is_null() ? "" : row["port"].c_str();
+            order["emptyDehireDepot"] = row["empty_dehire_depot"].is_null() ? "" : row["empty_dehire_depot"].c_str();
+            order["etd"] = row["etd"].is_null() ? "" : row["etd"].c_str();
+            order["lastFreeDateLfd"] = row["last_free_date_lfd"].is_null() ? "" : row["last_free_date_lfd"].c_str();
+            order["deliveryType"] = row["delivery_type"].is_null() ? "" : row["delivery_type"].c_str();
+            order["doorDirection"] = row["door_direction"].is_null() ? "" : row["door_direction"].c_str();
+            order["bookingPerson"] = row["booking_person"].is_null() ? "" : row["booking_person"].c_str();
+            order["extraSurcharge"] = row["extra_surcharge"].is_null() ? "" : row["extra_surcharge"].c_str();
             
             order_list.push_back(std::move(order));
         }
 
         txn.commit();
 
-        // 返回数据
         result["retCode"] = 200;
         result["rows"] = std::move(order_list);
         result["total"] = total;
@@ -1286,8 +1340,113 @@ crow::response rejectOrderFunc(const crow::request& req, pqxx::connection& conn)
     }
 }
 
+// ==================== 更新订单状态 ====================
+crow::response updateOrderStatusFunc(const crow::request& req, pqxx::connection& conn) {
+    crow::json::wvalue result;
+
+    // Token 校验
+    std::string token = req.get_header_value("token");
+    if (token.empty()) {
+        result["retCode"] = 401;
+        result["errorMsg"] = "Missing token";
+        return crow::response(401, result);
+    }
+
+    // 解析请求体
+    auto body = crow::json::load(req.body);
+    if (!body) {
+        result["retCode"] = 400;
+        result["errorMsg"] = "Request body error";
+        return crow::response(400, result);
+    }
+
+    try {
+        pqxx::work txn(conn);
+
+        // JWT 验证
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{"user_management"})
+            .with_issuer("user_management");
+        verifier.verify(decoded);
+
+        const std::string username = decoded.get_subject();
+
+        // 获取当前用户ID
+        pqxx::result staffRes = txn.exec_params(
+            "SELECT id FROM staff WHERE username = $1", username);
+        if (staffRes.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "User not found";
+            return crow::response(400, result);
+        }
+        int userId = staffRes[0]["id"].as<int>();
+
+        // 必填字段校验
+        if (!body.has("id") || !body.has("status")) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "id and status are required";
+            return crow::response(400, result);
+        }
+
+        int orderId = body["id"].i();
+        int newStatus = body["status"].i();
+
+        // 验证状态值是否在有效范围内 (1-10)
+        if (newStatus < 1 || newStatus > 10) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "Invalid status value, must be between 1 and 10";
+            return crow::response(400, result);
+        }
+
+        // 检查订单是否存在
+        pqxx::result checkRes = txn.exec_params(
+            "SELECT id, status FROM orders WHERE id = $1", orderId);
+        if (checkRes.empty()) {
+            result["retCode"] = 404;
+            result["errorMsg"] = "Order not found";
+            return crow::response(404, result);
+        }
+
+        int oldStatus = checkRes[0]["status"].as<int>();
+
+        // 更新订单状态
+        txn.exec_params(
+            "UPDATE orders SET status = $1, process_client_id = $2, update_time = CURRENT_TIMESTAMP WHERE id = $3",
+            newStatus, userId, orderId
+        );
+
+        // 记录状态变更日志（可选）
+        // 如果后续需要日志表，可以在这里插入记录
+        // 目前先注释掉，后续可根据需要添加
+        /*
+        txn.exec_params(
+            "INSERT INTO order_status_log (order_id, old_status, new_status, operator_id, created_at) "
+            "VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)",
+            orderId, oldStatus, newStatus, userId
+        );
+        */
+
+        result["retCode"] = 200;
+        result["msg"] = "Order status updated successfully";
+        result["data"]["orderId"] = orderId;
+        result["data"]["oldStatus"] = oldStatus;
+        result["data"]["newStatus"] = newStatus;
+
+        txn.commit();
+        return crow::response(200, result);
+
+    } catch (const std::exception& e) {
+        std::cerr << "Update Order Status Error: " << e.what() << std::endl;
+        result["retCode"] = 500;
+        result["errorMsg"] = e.what();
+        return crow::response(500, result);
+    }
+}
+
 AUTO_REGISTER_ORDER_API("addOrder", addOrderFunc);
 AUTO_REGISTER_ORDER_API("importExcel", importExcelFunc);
 AUTO_REGISTER_ORDER_API("queryOrders", queryOrdersFunc);
 AUTO_REGISTER_ORDER_API("approveOrder", approveOrderFunc);
 AUTO_REGISTER_ORDER_API("rejectOrder", rejectOrderFunc);
+AUTO_REGISTER_ORDER_API("updateOrderStatus", updateOrderStatusFunc);

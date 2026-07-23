@@ -77,6 +77,23 @@ int main() {
         std::cout << "queryOrdersFunc not exist " << std::endl;
     }
 
+    auto updateOrderStatusFunc = OrderControllerFactory::instance().create("updateOrderStatus");
+    if (updateOrderStatusFunc) {                        
+        CROW_ROUTE(app, "/order_mng/updateOrderStatus").methods("POST"_method)
+        ([updateOrderStatusFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue result;
+                result["retCode"] = 400;
+                result["errorMsg"] = "Database connection failed";
+                return crow::response(400, result);
+            }
+            return updateOrderStatusFunc(req, *connGuard);
+        });
+    }else{
+        std::cout << "queryOrdersFunc not exist " << std::endl;
+    }
+
     std::cout << "Order Management Service running on port " << ORDER_MANAGE_PORT << std::endl;
     app.port(ORDER_MANAGE_PORT).multithreaded().run();
     

@@ -103,27 +103,35 @@ CREATE TABLE IF NOT EXISTS container (
 );
 
 -- ============================================================
--- 6. ORDER 订单表
+-- 6. ORDER 订单表（完整版）
 -- ============================================================
 DROP TABLE IF EXISTS orders;
 CREATE TABLE IF NOT EXISTS orders (
     id SERIAL PRIMARY KEY,
-    type INTEGER,                                      -- TYPE
+    type INTEGER,                                      -- 订单类型: 1-Import, 2-Export
     start_point VARCHAR(255),                          -- From/起点
     end_point VARCHAR(255),                            -- To/终点
-    size VARCHAR(255),                                 -- size
+    size VARCHAR(255),                                 -- Container Size: 20GP/40GP/45HC等
     container_no VARCHAR(255),                         -- Container NO
-    pin VARCHAR(255),                                  -- pin
-    customer_note VARCHAR(255),                        -- 客人要求
+    pin VARCHAR(255),                                  -- EIDO Pin
+    customer_note VARCHAR(255),                        -- 客人要求/Delivery Instructions
     vessel VARCHAR(255),                               -- Vessel
     shipping_line VARCHAR(255),                        -- Shipping Line
     eta DATE,                                          -- ETA
-    first_available DATE,                              -- First avaiable
-    last_free_date DATE,                               -- Last Free Date
+    etd DATE,                                          -- ETD (新增)
+    first_available DATE,                              -- First Free Date (FFD)
+    last_free_date DATE,                               -- Free Detention Date
+    last_free_date_lfd DATE,                           -- Last Free Date (LFD) (新增)
+    port VARCHAR(255),                                 -- Pick up Location: DPW/PAT/HPA/Others
+    empty_dehire_depot VARCHAR(255),                   -- Empty Dehire Depot (新增)
+    delivery_type VARCHAR(100),                        -- Delivery Type: Store Door/Container Yard/Rail Ramp/Port/Others (新增)
+    door_direction VARCHAR(100),                       -- Door Direction: Pick Up/Delivery/Pick Up & Delivery (新增)
     client_name VARCHAR(255),                          -- Client Name
-    customer_address VARCHAR(255),                     -- customer address
-    forwarder VARCHAR(255),                            -- Customer name / Forwarder
-    weight VARCHAR(50),                                -- weight
+    customer_address VARCHAR(255),                     -- Delivery Address
+    forwarder VARCHAR(255),                            -- Forwarder Name
+    booking_person VARCHAR(255),                       -- Booking Person (新增)
+    extra_surcharge TEXT,                              -- Extra Surcharge Details (新增)
+    weight VARCHAR(50),                                -- Weight (KG)
     invoice_id VARCHAR(50),                            -- Invoice
     noted VARCHAR(255),                                -- Noted / 备注
     gate_in VARCHAR(255),                              -- Gate in

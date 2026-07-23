@@ -1106,13 +1106,14 @@ crow::response batchDispatchFunc(const crow::request& req, pqxx::connection& con
         
         auto tasks_array = body;
         int successCount = 0;
+        std::vector<int> taskIds;           // ✅ 存储成功创建的 taskId
+        std::vector<std::string> errors;    // ✅ 存储错误信息
         
         for (const auto& task_data : tasks_array) {
             std::string orderId = task_data["orderId"].s();
             std::string selectedVehicle = task_data["selectedVehicle"].s();
             int selectedDriver = task_data["selectedDriver"].i();
             
-            // ✅ 新增：获取起点和终点
             std::string startPoint = "";
             std::string endPoint = "";
             if (task_data.has("startPoint")) {
@@ -1123,15 +1124,13 @@ crow::response batchDispatchFunc(const crow::request& req, pqxx::connection& con
             }
             
             if (orderId.empty()) {
-                result["retCode"] = 400;
-                result["errorMsg"] = "orderId is required";
-                return crow::response(400, result);
+                errors.push_back("orderId is required");
+                continue;
             }
             
             if (startPoint.empty() || endPoint.empty()) {
-                result["retCode"] = 400;
-                result["errorMsg"] = "startPoint and endPoint are required for order: " + orderId;
-                return crow::response(400, result);
+                errors.push_back("startPoint and endPoint are required for order: " + orderId);
+                continue;
             }
             
             size_t dashPos = orderId.find('-');
@@ -1144,9 +1143,8 @@ crow::response batchDispatchFunc(const crow::request& req, pqxx::connection& con
             );
             
             if (order_res.empty()) {
-                result["retCode"] = 400;
-                result["errorMsg"] = "Order not found: " + orderId;
-                return crow::response(400, result);
+                errors.push_back("Order not found: " + orderId);
+                continue;
             }
             
             int order_id = order_res[0]["id"].as<int>();
@@ -1172,9 +1170,8 @@ crow::response batchDispatchFunc(const crow::request& req, pqxx::connection& con
                 if (!vehicle_res.empty()) {
                     vehicle_id = vehicle_res[0]["id"].as<int>();
                 } else {
-                    result["retCode"] = 404;
-                    result["errorMsg"] = "Vehicle not found: " + selectedVehicle;
-                    return crow::response(404, result);
+                    errors.push_back("Vehicle not found: " + selectedVehicle);
+                    continue;
                 }
             }
             
@@ -1183,16 +1180,15 @@ crow::response batchDispatchFunc(const crow::request& req, pqxx::connection& con
                 selectedDriver
             );
             if (driver_res.empty()) {
-                result["retCode"] = 404;
-                result["errorMsg"] = "Driver not found: " + std::to_string(selectedDriver);
-                return crow::response(404, result);
+                errors.push_back("Driver not found: " + std::to_string(selectedDriver));
+                continue;
             }
             
             int driverClientId = driver_res[0]["client_id"].is_null() ? 0 : driver_res[0]["client_id"].as<int>();
             int task_status = 1;
             std::string task_start_time = getCurrentTimeString();
 
-            // ✅ 插入 task 时写入 start_point 和 end_point
+            // ✅ 插入 task 并获取 id
             pqxx::result insert_res;
             if (container_id == -1) {
                 insert_res = txn.exec_params(
@@ -1226,6 +1222,14 @@ crow::response batchDispatchFunc(const crow::request& req, pqxx::connection& con
                     0
                 );
             }
+
+            if (insert_res.empty()) {
+                errors.push_back("Failed to create task for order: " + orderId);
+                continue;
+            }
+
+            int taskId = insert_res[0]["id"].as<int>();
+            taskIds.push_back(taskId);  // ✅ 收集 taskId
             
             // 更新订单状态为进行中 (status=2)
             txn.exec_params(
@@ -1248,9 +1252,27 @@ crow::response batchDispatchFunc(const crow::request& req, pqxx::connection& con
         
         txn.commit();
         
+        // ============================================================
+        // ✅ 构建返回数据（包含 taskIds）
+        // ============================================================
         result["retCode"] = 200;
         result["message"] = "Batch dispatch completed";
         result["successCount"] = successCount;
+        
+        // ✅ 返回 taskId 列表
+        crow::json::wvalue::list taskIdList;
+        for (int id : taskIds) {
+            taskIdList.push_back(id);
+        }
+        result["taskIds"] = std::move(taskIdList);
+        
+        if (!errors.empty()) {
+            crow::json::wvalue::list errorList;
+            for (const auto& err : errors) {
+                errorList.push_back(err);
+            }
+            result["errors"] = std::move(errorList);
+        }
         
     } catch (const std::exception& e) {
         std::cerr << "Batch Dispatch Error: " << e.what() << std::endl;
