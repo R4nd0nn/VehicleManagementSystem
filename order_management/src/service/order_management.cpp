@@ -910,7 +910,7 @@ crow::response queryOrdersFunc(const crow::request& req, pqxx::connection& conn)
             .with_issuer("user_management");
         verifier.verify(decoded);
 
-        // ✅ 添加新字段到 SELECT
+        // ========== 动态构建查询条件 ==========
         std::string baseQuery = "SELECT id, type, start_point, end_point, size, container_no, pin, customer_note, "
                                  "vessel, shipping_line, eta, first_available, last_free_date, "
                                  "client_name, customer_address, forwarder, weight, invoice_id, noted, "
@@ -937,6 +937,7 @@ crow::response queryOrdersFunc(const crow::request& req, pqxx::connection& conn)
             "eta_start", "eta_end", "first_available_start", "first_available_end",
             "last_free_date_start", "last_free_date_end",
             "port", "etd", "delivery_type", "door_direction",
+            "sortField", "sortOrder",
             "pageNum", "pageSize"
         };
         
@@ -974,7 +975,6 @@ crow::response queryOrdersFunc(const crow::request& req, pqxx::connection& conn)
             {"weight", "weight", false},
             {"invoice", "invoice_id", true},
             {"noted", "noted", true},
-            {"status", "status", false},
             {"process_client_id", "process_client_id", false},
             {"create_user_id", "create_user_id", false},
             {"eta_start", "eta", false},
@@ -989,6 +989,47 @@ crow::response queryOrdersFunc(const crow::request& req, pqxx::connection& conn)
             {"door_direction", "door_direction", false}
         };
         
+        // ============================================================
+        // ✅ 特殊处理 status 字段（支持逗号分隔的多个值）
+        // ============================================================
+        auto statusIt = queryParams.find("status");
+        if (statusIt != queryParams.end() && !statusIt->second.empty()) {
+            std::string statusStr = statusIt->second;
+            
+            // 检查是否包含逗号（多个状态值）
+            if (statusStr.find(',') != std::string::npos) {
+                // 多个状态：使用 IN 查询
+                std::vector<std::string> statusValues;
+                std::stringstream ss(statusStr);
+                std::string item;
+                while (std::getline(ss, item, ',')) {
+                    if (!item.empty()) {
+                        statusValues.push_back(item);
+                    }
+                }
+                
+                if (!statusValues.empty()) {
+                    std::string condition = "status IN (";
+                    for (size_t i = 0; i < statusValues.size(); i++) {
+                        if (i > 0) condition += ", ";
+                        condition += "$" + std::to_string(paramCounter);
+                        params.push_back(statusValues[i]);
+                        paramCounter++;
+                    }
+                    condition += ")";
+                    conditions.push_back(condition);
+                }
+            } else {
+                // 单个状态：使用 =
+                conditions.push_back("status = $" + std::to_string(paramCounter));
+                params.push_back(statusStr);
+                paramCounter++;
+            }
+        }
+        
+        // ============================================================
+        // 处理其他筛选字段
+        // ============================================================
         for (const auto& filter : filters) {
             auto it = queryParams.find(filter.paramName);
             if (it != queryParams.end() && !it->second.empty()) {
@@ -1013,6 +1054,9 @@ crow::response queryOrdersFunc(const crow::request& req, pqxx::connection& conn)
             }
         }
         
+        // ============================================================
+        // 分页
+        // ============================================================
         int pageNum = 1;
         int pageSize = 20;
         
@@ -1028,18 +1072,80 @@ crow::response queryOrdersFunc(const crow::request& req, pqxx::connection& conn)
         
         int offset = (pageNum - 1) * pageSize;
         
+        // ============================================================
+        // 排序
+        // ============================================================
+        std::string sortClause = " ORDER BY id DESC";
+        auto sortFieldIt = queryParams.find("sortField");
+        auto sortOrderIt = queryParams.find("sortOrder");
+        
+        if (sortFieldIt != queryParams.end() && !sortFieldIt->second.empty()) {
+            std::string sortField = sortFieldIt->second;
+            std::string sortOrder = "ASC";
+            if (sortOrderIt != queryParams.end() && !sortOrderIt->second.empty()) {
+                std::string order = sortOrderIt->second;
+                std::transform(order.begin(), order.end(), order.begin(), ::toupper);
+                if (order == "ASC" || order == "DESC") {
+                    sortOrder = order;
+                }
+            }
+            
+            // 字段名映射（前端字段名 → 数据库字段名）
+            std::map<std::string, std::string> fieldMapping = {
+                {"id", "id"},
+                {"type", "type"},
+                {"from", "start_point"},
+                {"to", "end_point"},
+                {"size", "size"},
+                {"containerNo", "container_no"},
+                {"pin", "pin"},
+                {"customerRequest", "customer_note"},
+                {"vessel", "vessel"},
+                {"shippingLine", "shipping_line"},
+                {"eta", "eta"},
+                {"etd", "etd"},
+                {"firstAvailable", "first_available"},
+                {"lastFreeDate", "last_free_date"},
+                {"lastFreeDateLfd", "last_free_date_lfd"},
+                {"clientName", "client_name"},
+                {"customerAddress", "customer_address"},
+                {"forwarder", "forwarder"},
+                {"weight", "weight"},
+                {"invoice", "invoice_id"},
+                {"noted", "noted"},
+                {"status", "status"},
+                {"port", "port"},
+                {"emptyDehireDepot", "empty_dehire_depot"},
+                {"deliveryType", "delivery_type"},
+                {"doorDirection", "door_direction"},
+                {"bookingPerson", "booking_person"},
+                {"extraSurcharge", "extra_surcharge"}
+            };
+            
+            auto it = fieldMapping.find(sortField);
+            if (it != fieldMapping.end()) {
+                sortClause = " ORDER BY " + it->second + " " + sortOrder;
+            }
+        }
+        
+        // ============================================================
+        // 组装完整查询
+        // ============================================================
         std::string finalQuery = baseQuery;
         for (const auto& cond : conditions) {
             finalQuery += " AND " + cond;
         }
         
-        finalQuery += " ORDER BY id DESC";
+        finalQuery += sortClause;
         finalQuery += " LIMIT $" + std::to_string(paramCounter) + " OFFSET $" + std::to_string(paramCounter + 1);
         params.push_back(std::to_string(pageSize));
         params.push_back(std::to_string(offset));
         
         pqxx::result res = txn.exec_params(finalQuery, pqxx::prepare::make_dynamic_params(params));
         
+        // ============================================================
+        // 查询总数
+        // ============================================================
         std::string countQuery = "SELECT COUNT(*) FROM orders WHERE 1=1";
         for (const auto& cond : conditions) {
             countQuery += " AND " + cond;
@@ -1059,6 +1165,9 @@ crow::response queryOrdersFunc(const crow::request& req, pqxx::connection& conn)
         
         int total = countRes[0][0].as<int>();
 
+        // ============================================================
+        // 构建返回的JSON数组
+        // ============================================================
         crow::json::wvalue::list order_list;
         
         for (const auto& row : res) {
@@ -1074,27 +1183,22 @@ crow::response queryOrdersFunc(const crow::request& req, pqxx::connection& conn)
             order["vessel"] = row["vessel"].is_null() ? "" : row["vessel"].c_str();
             order["shippingLine"] = row["shipping_line"].is_null() ? "" : row["shipping_line"].c_str();
             order["eta"] = row["eta"].is_null() ? "" : row["eta"].c_str();
+            order["etd"] = row["etd"].is_null() ? "" : row["etd"].c_str();
             order["firstAvailable"] = row["first_available"].is_null() ? "" : row["first_available"].c_str();
             order["lastFreeDate"] = row["last_free_date"].is_null() ? "" : row["last_free_date"].c_str();
+            order["lastFreeDateLfd"] = row["last_free_date_lfd"].is_null() ? "" : row["last_free_date_lfd"].c_str();
             order["clientName"] = row["client_name"].is_null() ? "" : row["client_name"].c_str();
             order["customerAddress"] = row["customer_address"].is_null() ? "" : row["customer_address"].c_str();
             order["forwarder"] = row["forwarder"].is_null() ? "" : row["forwarder"].c_str();
             order["weight"] = row["weight"].is_null() ? "" : row["weight"].c_str();
             order["invoice"] = row["invoice_id"].is_null() ? "" : row["invoice_id"].c_str();
             order["noted"] = row["noted"].is_null() ? "" : row["noted"].c_str();
-            
-            // ✅ 返回状态值（前端根据状态映射显示对应标签和颜色）
             order["status"] = row["status"].is_null() ? 1 : row["status"].as<int>();
-            
             order["process_client_id"] = row["process_client_id"].is_null() ? 0 : row["process_client_id"].as<int>();
             order["create_time"] = row["create_time"].is_null() ? "" : row["create_time"].c_str();
             order["create_user_id"] = row["create_user_id"].is_null() ? 0 : row["create_user_id"].as<int>();
-            
-            // 新增字段
             order["port"] = row["port"].is_null() ? "" : row["port"].c_str();
             order["emptyDehireDepot"] = row["empty_dehire_depot"].is_null() ? "" : row["empty_dehire_depot"].c_str();
-            order["etd"] = row["etd"].is_null() ? "" : row["etd"].c_str();
-            order["lastFreeDateLfd"] = row["last_free_date_lfd"].is_null() ? "" : row["last_free_date_lfd"].c_str();
             order["deliveryType"] = row["delivery_type"].is_null() ? "" : row["delivery_type"].c_str();
             order["doorDirection"] = row["door_direction"].is_null() ? "" : row["door_direction"].c_str();
             order["bookingPerson"] = row["booking_person"].is_null() ? "" : row["booking_person"].c_str();
@@ -1427,9 +1531,249 @@ crow::response updateOrderStatusFunc(const crow::request& req, pqxx::connection&
     }
 }
 
+// ==================== 更新订单 ====================
+crow::response updateOrderFunc(const crow::request& req, pqxx::connection& conn) {
+    crow::json::wvalue result;
+
+    std::string token = req.get_header_value("token");
+    if (token.empty()) {
+        result["retCode"] = 401;
+        result["errorMsg"] = "Missing token";
+        return crow::response(401, result);
+    }
+
+    auto body = crow::json::load(req.body);
+    if (!body) {
+        result["retCode"] = 400;
+        result["errorMsg"] = "Request body error";
+        return crow::response(400, result);
+    }
+
+    try {
+        pqxx::work txn(conn);
+
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{"user_management"})
+            .with_issuer("user_management");
+        verifier.verify(decoded);
+
+        const std::string username = decoded.get_subject();
+
+        pqxx::result staffRes = txn.exec_params(
+            "SELECT id FROM staff WHERE username = $1", username);
+        if (staffRes.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "User not found";
+            return crow::response(400, result);
+        }
+        int userId = staffRes[0]["id"].as<int>();
+
+        if (!body.has("id")) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "id is required";
+            return crow::response(400, result);
+        }
+
+        int orderId = body["id"].i();
+
+        // 检查订单是否存在
+        pqxx::result checkRes = txn.exec_params(
+            "SELECT id FROM orders WHERE id = $1", orderId);
+        if (checkRes.empty()) {
+            result["retCode"] = 404;
+            result["errorMsg"] = "Order not found";
+            return crow::response(404, result);
+        }
+
+        // 构建动态更新语句
+        std::vector<std::string> updateFields;
+        std::vector<std::string> params;
+        int paramCounter = 1;
+
+        auto addStringField = [&](const std::string& dbField, const std::string& paramName) {
+            if (body.has(paramName)) {
+                std::string value = body[paramName].s();
+                updateFields.push_back(dbField + " = $" + std::to_string(paramCounter));
+                params.push_back(value.empty() ? "" : value);
+                paramCounter++;
+            }
+        };
+        
+        auto addIntField = [&](const std::string& dbField, const std::string& paramName) {
+            if (body.has(paramName)) {
+                int value = body[paramName].i();
+                updateFields.push_back(dbField + " = $" + std::to_string(paramCounter));
+                params.push_back(std::to_string(value));
+                paramCounter++;
+            }
+        };
+
+        // 所有可更新的字段
+        addIntField("type", "type");
+        addStringField("start_point", "from");
+        addStringField("end_point", "to");
+        addStringField("size", "size");
+        addStringField("container_no", "containerNo");
+        addStringField("pin", "pin");
+        addStringField("customer_note", "customerRequest");
+        addStringField("vessel", "vessel");
+        addStringField("shipping_line", "shippingLine");
+        addStringField("eta", "eta");
+        addStringField("etd", "etd");
+        addStringField("first_available", "firstAvailable");
+        addStringField("last_free_date", "lastFreeDate");
+        addStringField("last_free_date_lfd", "lastFreeDateLfd");
+        addStringField("client_name", "clientName");
+        addStringField("customer_address", "customerAddress");
+        addStringField("forwarder", "forwarder");
+        addStringField("weight", "weight");
+        addStringField("invoice_id", "invoice");
+        addStringField("noted", "noted");
+        addStringField("port", "port");
+        addStringField("empty_dehire_depot", "emptyDehireDepot");
+        addStringField("delivery_type", "deliveryType");
+        addStringField("door_direction", "doorDirection");
+        addStringField("booking_person", "bookingPerson");
+        addStringField("extra_surcharge", "extraSurcharge");
+
+        if (updateFields.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "No fields to update";
+            return crow::response(400, result);
+        }
+
+        // 添加更新时间
+        updateFields.push_back("updated_at = CURRENT_TIMESTAMP");
+
+        std::string updateSql = "UPDATE orders SET ";
+        for (size_t i = 0; i < updateFields.size(); i++) {
+            if (i > 0) updateSql += ", ";
+            updateSql += updateFields[i];
+        }
+        updateSql += " WHERE id = $" + std::to_string(paramCounter);
+        params.push_back(std::to_string(orderId));
+
+        txn.exec_params(updateSql, pqxx::prepare::make_dynamic_params(params));
+
+        result["retCode"] = 200;
+        result["msg"] = "Order updated successfully";
+
+        txn.commit();
+        return crow::response(200, result);
+
+    } catch (const std::exception& e) {
+        std::cerr << "Update Order Error: " << e.what() << std::endl;
+        result["retCode"] = 500;
+        result["errorMsg"] = e.what();
+        return crow::response(500, result);
+    }
+}
+
+// ==================== 删除订单 ====================
+crow::response deleteOrderFunc(const crow::request& req, pqxx::connection& conn) {
+    crow::json::wvalue result;
+
+    std::string token = req.get_header_value("token");
+    if (token.empty()) {
+        result["retCode"] = 401;
+        result["errorMsg"] = "Missing token";
+        return crow::response(401, result);
+    }
+
+    auto body = crow::json::load(req.body);
+    if (!body) {
+        result["retCode"] = 400;
+        result["errorMsg"] = "Request body error";
+        return crow::response(400, result);
+    }
+
+    try {
+        pqxx::work txn(conn);
+
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{"user_management"})
+            .with_issuer("user_management");
+        verifier.verify(decoded);
+
+        std::vector<int> ids;
+        
+        if (body.has("ids")) {
+            try {
+                for (const auto& item : body["ids"]) {
+                    ids.push_back(item.i());
+                }
+            } catch (...) {
+                ids.push_back(body["ids"].i());
+            }
+        } else if (body.has("id")) {
+            ids.push_back(body["id"].i());
+        } else {
+            result["retCode"] = 400;
+            result["errorMsg"] = "id or ids is required";
+            return crow::response(400, result);
+        }
+
+        if (ids.empty()) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "No valid ids provided";
+            return crow::response(400, result);
+        }
+
+        // 检查是否存在关联的 container
+        // 如果有，先删除关联的 container（软删除）
+        for (int id : ids) {
+            // 获取订单的 container_no
+            pqxx::result orderRes = txn.exec_params(
+                "SELECT container_no FROM orders WHERE id = $1", id);
+            if (!orderRes.empty()) {
+                std::string containerNo = orderRes[0]["container_no"].is_null() ? "" : orderRes[0]["container_no"].as<std::string>();
+                if (!containerNo.empty()) {
+                    // 软删除 container
+                    txn.exec_params(
+                        "UPDATE container SET deleted_at = CURRENT_TIMESTAMP WHERE container_no = $1",
+                        containerNo.c_str()
+                    );
+                }
+            }
+        }
+
+        // 构建删除 SQL
+        std::string deleteSql = "DELETE FROM orders WHERE id IN (";
+        for (size_t i = 0; i < ids.size(); i++) {
+            if (i > 0) deleteSql += ", ";
+            deleteSql += "$" + std::to_string(i + 1);
+        }
+        deleteSql += ")";
+
+        std::vector<std::string> params;
+        for (int id : ids) {
+            params.push_back(std::to_string(id));
+        }
+
+        pqxx::result res = txn.exec_params(deleteSql, pqxx::prepare::make_dynamic_params(params));
+        
+        result["retCode"] = 200;
+        result["msg"] = "Order(s) deleted successfully";
+        result["affected_rows"] = (int)res.affected_rows();
+        
+        txn.commit();
+        return crow::response(200, result);
+
+    } catch (const std::exception& e) {
+        std::cerr << "Delete Order Error: " << e.what() << std::endl;
+        result["retCode"] = 500;
+        result["errorMsg"] = e.what();
+        return crow::response(500, result);
+    }
+}
+
 AUTO_REGISTER_ORDER_API("addOrder", addOrderFunc);
 AUTO_REGISTER_ORDER_API("importExcel", importExcelFunc);
 AUTO_REGISTER_ORDER_API("queryOrders", queryOrdersFunc);
 AUTO_REGISTER_ORDER_API("approveOrder", approveOrderFunc);
 AUTO_REGISTER_ORDER_API("rejectOrder", rejectOrderFunc);
 AUTO_REGISTER_ORDER_API("updateOrderStatus", updateOrderStatusFunc);
+AUTO_REGISTER_ORDER_API("updateOrder", updateOrderFunc); 
+AUTO_REGISTER_ORDER_API("deleteOrder", deleteOrderFunc); 

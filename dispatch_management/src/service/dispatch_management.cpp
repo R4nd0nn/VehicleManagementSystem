@@ -4113,6 +4113,7 @@ crow::response addTaskToBoardFunc(const crow::request& req, pqxx::connection& co
 
         int successCount = 0;
         std::vector<std::string> errors;
+        std::vector<int> scheduleTaskIds;  // ✅ 新增：存储成功插入的 schedule_task ID
 
         for (const auto& taskIdVal : taskIds) {
             int taskId = taskIdVal.i();
@@ -4194,6 +4195,8 @@ crow::response addTaskToBoardFunc(const crow::request& req, pqxx::connection& co
             if (insertRes.empty()) {
                 errors.push_back("Failed to add task " + std::to_string(taskId) + " to board");
             } else {
+                int scheduleTaskId = insertRes[0]["id"].as<int>();
+                scheduleTaskIds.push_back(scheduleTaskId);  // ✅ 收集 schedule_task ID
                 successCount++;
             }
         }
@@ -4201,6 +4204,13 @@ crow::response addTaskToBoardFunc(const crow::request& req, pqxx::connection& co
         result["retCode"] = 200;
         result["msg"] = "Added " + std::to_string(successCount) + " tasks to board";
         result["successCount"] = successCount;
+        
+        // ✅ 返回 schedule_task ID 列表
+        crow::json::wvalue::list idList;
+        for (int id : scheduleTaskIds) {
+            idList.push_back(id);
+        }
+        result["data"] = std::move(idList);
         
         if (!errors.empty()) {
             crow::json::wvalue::list errorList;

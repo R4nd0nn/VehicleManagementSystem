@@ -94,6 +94,40 @@ int main() {
         std::cout << "queryOrdersFunc not exist " << std::endl;
     }
 
+    auto updateOrderFunc = OrderControllerFactory::instance().create("updateOrder");
+    if (updateOrderFunc) {                        
+        CROW_ROUTE(app, "/order_mng/updateOrder").methods("POST"_method)
+        ([updateOrderFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue result;
+                result["retCode"] = 400;
+                result["errorMsg"] = "Database connection failed";
+                return crow::response(400, result);
+            }
+            return updateOrderFunc(req, *connGuard);
+        });
+    }else{
+        std::cout << "queryOrdersFunc not exist " << std::endl;
+    }
+
+    auto deleteOrderFunc = OrderControllerFactory::instance().create("deleteOrder");
+    if (deleteOrderFunc) {                        
+        CROW_ROUTE(app, "/order_mng/deleteOrder").methods("POST"_method)
+        ([deleteOrderFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue result;
+                result["retCode"] = 400;
+                result["errorMsg"] = "Database connection failed";
+                return crow::response(400, result);
+            }
+            return deleteOrderFunc(req, *connGuard);
+        });
+    }else{
+        std::cout << "queryOrdersFunc not exist " << std::endl;
+    }
+
     std::cout << "Order Management Service running on port " << ORDER_MANAGE_PORT << std::endl;
     app.port(ORDER_MANAGE_PORT).multithreaded().run();
     
