@@ -460,7 +460,7 @@ int main() {
         });
     }
 
-        auto removeTaskFromBoardFunc = DispatchControllerFactory::instance().create("removeTaskFromBoard");
+    auto removeTaskFromBoardFunc = DispatchControllerFactory::instance().create("removeTaskFromBoard");
     if (removeTaskFromBoardFunc) {
         CROW_ROUTE(app, "/dispatch_mng/removeTaskFromBoard").methods("POST"_method)
         ([removeTaskFromBoardFunc](const crow::request& req) {
@@ -472,6 +472,21 @@ int main() {
                 return crow::response(400, result);
             }
             return removeTaskFromBoardFunc(req, *connGuard);
+        });
+    }
+
+    auto updateTaskOrderFunc = DispatchControllerFactory::instance().create("updateTaskOrder");
+    if (updateTaskOrderFunc) {
+        CROW_ROUTE(app, "/dispatch_mng/updateTaskOrder").methods("POST"_method)
+        ([updateTaskOrderFunc](const crow::request& req) {
+            ConnectionPool::ConnectionGuard connGuard(*g_db_pool);
+            if (!connGuard.isValid()) {
+                crow::json::wvalue result;
+                result["retCode"] = 400;
+                result["errorMsg"] = "Database connection failed";
+                return crow::response(400, result);
+            }
+            return updateTaskOrderFunc(req, *connGuard);
         });
     }
 

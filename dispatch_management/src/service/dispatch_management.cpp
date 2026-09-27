@@ -4295,6 +4295,117 @@ crow::response removeTaskFromBoardFunc(const crow::request& req, pqxx::connectio
     }
 }
 
+// ==================== 批量更新任务排序 ====================
+crow::response updateTaskOrderFunc(const crow::request& req, pqxx::connection& conn) {
+    crow::json::wvalue result;
+    
+    std::string token = req.get_header_value("token");
+    if (token.empty()) {
+        result["retCode"] = 401;
+        result["errorMsg"] = "Missing token";
+        return crow::response(401, result);
+    }
+
+    auto body = crow::json::load(req.body);
+    if (!body) {
+        result["retCode"] = 400;
+        result["errorMsg"] = "Request body error";
+        return crow::response(400, result);
+    }
+
+    try {
+        pqxx::work txn(conn);
+        
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{"user_management"})
+            .with_issuer("user_management");
+        verifier.verify(decoded);
+
+        const std::string username = decoded.get_subject();
+        auto [userId, userName] = getCurrentUser(txn, username);
+        if (userId == 0) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "User not found";
+            return crow::response(400, result);
+        }
+
+        // ✅ 修复：使用 type() 判断是否为数组
+        // crow::json::type::List 表示数组
+        if (body.t() != crow::json::type::List) {
+            result["retCode"] = 400;
+            result["errorMsg"] = "Expected array of tasks";
+            return crow::response(400, result);
+        }
+
+        int successCount = 0;
+        std::vector<std::string> errors;
+
+        for (const auto& item : body) {
+            if (!item.has("id") || !item.has("priority") || !item.has("driverId")) {
+                errors.push_back("Missing required fields: id, priority, driverId");
+                continue;
+            }
+
+            int scheduleTaskId = item["id"].i();
+            int priority = item["priority"].i();
+            int driverId = item["driverId"].i();
+
+            // 验证 schedule_task 是否存在
+            pqxx::result checkRes = txn.exec_params(
+                "SELECT id FROM schedule_task WHERE id = $1",
+                scheduleTaskId
+            );
+            if (checkRes.empty()) {
+                errors.push_back("Schedule task not found: " + std::to_string(scheduleTaskId));
+                continue;
+            }
+
+            // 验证司机是否存在（如果 driverId 变化）
+            pqxx::result driverCheck = txn.exec_params(
+                "SELECT id FROM driver WHERE id = $1",
+                driverId
+            );
+            if (driverCheck.empty()) {
+                errors.push_back("Driver not found: " + std::to_string(driverId));
+                continue;
+            }
+
+            // 更新 schedule_task 的 priority 和 driver_id
+            txn.exec_params(
+                "UPDATE schedule_task SET priority = $1, driver_id = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3",
+                priority,
+                driverId,
+                scheduleTaskId
+            );
+
+            successCount++;
+        }
+
+        txn.commit();
+
+        result["retCode"] = 200;
+        result["msg"] = "Task order updated successfully";
+        result["successCount"] = successCount;
+        
+        if (!errors.empty()) {
+            crow::json::wvalue::list errorList;
+            for (const auto& err : errors) {
+                errorList.push_back(err);
+            }
+            result["errors"] = std::move(errorList);
+        }
+
+        return crow::response(200, result);
+
+    } catch (const std::exception& e) {
+        std::cerr << "Update Task Order Error: " << e.what() << std::endl;
+        result["retCode"] = 500;
+        result["errorMsg"] = e.what();
+        return crow::response(500, result);
+    }
+}
+
 // ==================== 注册 API ====================
 AUTO_REGISTER_DISPATCH_API("addDriver", addDriverFunc);
 AUTO_REGISTER_DISPATCH_API("updateDriver", updateDriverFunc);
@@ -4330,3 +4441,4 @@ AUTO_REGISTER_DISPATCH_API("getTasksByDateAndDriver", getTasksByDateAndDriverFun
 AUTO_REGISTER_DISPATCH_API("updateTaskStatus", updateTaskStatusFunc);
 AUTO_REGISTER_DISPATCH_API("addTaskToBoard", addTaskToBoardFunc);
 AUTO_REGISTER_DISPATCH_API("removeTaskFromBoard", removeTaskFromBoardFunc);
+AUTO_REGISTER_DISPATCH_API("updateTaskOrder", updateTaskOrderFunc);
